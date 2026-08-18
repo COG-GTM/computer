@@ -163,6 +163,27 @@ test("/api refuses anything that is not a websocket handshake", async (_ctx) => 
   expect(badVersion).toMatch(/^HTTP\/1\.1 426 /);
   expect(badVersion).toMatch(/Sec-WebSocket-Version: 13, 8/i);
 
+  // A handshake that names no version is malformed, not a version
+  // mismatch: nothing was negotiated to disagree about. Same for a
+  // repeated header, which node joins into "13, 13", and for a value
+  // that is not a whole number.
+  for (const [label, extra] of [
+    ["absent", []],
+    ["repeated", ["Sec-WebSocket-Version: 13", "Sec-WebSocket-Version: 13"]],
+    ["non-numeric", ["Sec-WebSocket-Version: banana"]],
+    ["fractional", ["Sec-WebSocket-Version: 13.5"]],
+  ] as const) {
+    const malformed = await rawRequest(port, [
+      "GET /api HTTP/1.1",
+      `Host: 127.0.0.1:${port}`,
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+      ...extra,
+    ]);
+    expect(malformed, `version ${label}`).toMatch(/^HTTP\/1\.1 400 /);
+  }
+
   // A handshake missing its key is malformed, not a version problem.
   const noKey = await rawRequest(port, [
     "GET /api HTTP/1.1",

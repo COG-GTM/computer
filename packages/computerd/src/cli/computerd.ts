@@ -317,8 +317,16 @@ function createHTTPServer(
     // It answers 400 for an unsupported version too, where the
     // websocket specification calls for 426, so that one case is
     // handled here before handing over.
-    const version = Number(request.headers["sec-websocket-version"]);
-    if (version !== 13 && version !== 8) {
+    //
+    // Only a header naming a single version we do not speak earns 426.
+    // Absent, repeated (node joins the values into "13, 13"), or not a
+    // whole number are all malformed handshakes rather than version
+    // mismatches, and answering those with 426 points the caller at
+    // something that was never the problem. They fall through to `ws`,
+    // which answers 400 and still reports the versions we do speak.
+    const versionHeader = request.headers["sec-websocket-version"];
+    const version = typeof versionHeader === "string" ? Number(versionHeader.trim()) : Number.NaN;
+    if (Number.isInteger(version) && version !== 13 && version !== 8) {
       socket.write(
         "HTTP/1.1 426 Upgrade Required\r\n" +
           "Sec-WebSocket-Version: 13, 8\r\n" +
