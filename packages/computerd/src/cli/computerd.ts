@@ -184,35 +184,6 @@ function createHTTPServer(
       return;
     }
 
-    // /api/watermarks — the same sync revisions the session serves,
-    // over plain HTTP, for samplers that want a few numbers on an
-    // interval rather than a session of their own. It reads through
-    // rpc.sync.watermarks(), so the two cannot drift. Part of the
-    // workspace API rather than daemon introspection, hence /api
-    // rather than /__computerd.
-    if (path === "/api/watermarks") {
-      if (request.method === "HEAD") {
-        send(response, 200, "", { "content-type": "application/json; charset=utf-8" });
-        return;
-      }
-      void rpc.sync
-        .watermarks()
-        .then((watermarks) => {
-          send(response, 200, JSON.stringify(watermarks), {
-            "content-type": "application/json; charset=utf-8",
-          });
-        })
-        .catch((error: unknown) => {
-          console.error("/api/watermarks failed:", error);
-          if (!response.headersSent) {
-            send(response, 500, "internal error\n", {
-              "content-type": "text/plain; charset=utf-8",
-            });
-          }
-        });
-      return;
-    }
-
     // /connect — POST { base, health, api } naming an endpoint the
     // host wants us to dial back into. We poll `base + health` until
     // it answers, then open a capnweb WebSocket session against
@@ -235,6 +206,39 @@ function createHTTPServer(
         allow: "GET, HEAD",
         "content-type": "text/plain; charset=utf-8",
       });
+      return;
+    }
+
+    // /api/watermarks — the same sync revisions the session serves,
+    // over plain HTTP, for samplers that want a few numbers on an
+    // interval rather than a session of their own. It reads through
+    // rpc.sync.watermarks(), so the two cannot drift. Part of the
+    // workspace API rather than daemon introspection, hence /api
+    // rather than /__computerd.
+    //
+    // It has to sit below the method guard above: reads only, and the
+    // guard is what enforces that for every read route. Above it, this
+    // answered a POST or a DELETE with the numbers.
+    if (path === "/api/watermarks") {
+      if (request.method === "HEAD") {
+        send(response, 200, "", { "content-type": "application/json; charset=utf-8" });
+        return;
+      }
+      void rpc.sync
+        .watermarks()
+        .then((watermarks) => {
+          send(response, 200, JSON.stringify(watermarks), {
+            "content-type": "application/json; charset=utf-8",
+          });
+        })
+        .catch((error: unknown) => {
+          console.error("/api/watermarks failed:", error);
+          if (!response.headersSent) {
+            send(response, 500, "internal error\n", {
+              "content-type": "text/plain; charset=utf-8",
+            });
+          }
+        });
       return;
     }
 

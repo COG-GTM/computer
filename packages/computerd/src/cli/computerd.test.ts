@@ -206,6 +206,14 @@ test("/api/watermarks reports sync revisions over plain HTTP", async (_ctx) => {
 
   const res = await fetch(`http://127.0.0.1:${port}/api/watermarks`);
   expect(res.status).toBe(200);
+
+  // Reads only. The shared method guard covers every read route, and
+  // this one has to sit under it like the rest.
+  for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
+    const rejected = await fetch(`http://127.0.0.1:${port}/api/watermarks`, { method });
+    expect(rejected.status, `${method} /api/watermarks`).toBe(405);
+  }
+
   const body = await res.json();
   expect(body).toMatchObject({
     currentRev: expect.any(Number),
