@@ -41,6 +41,7 @@ import {
   type IsomorphicGitDiffClient,
   type ReadFileFn,
 } from "./diff.js";
+import { RemoteNotAllowedError } from "./errors.js";
 import { type GitInitOptions, type IsomorphicGitInitClient, initWith } from "./init.js";
 import {
   type FetchResult,
@@ -113,6 +114,7 @@ import {
   tagListWith,
   tagWith,
 } from "./refs.js";
+import { checkGitRemoteUrl, type GitRemotePolicy } from "./remote-policy.js";
 import {
   addWith,
   type GitAddOptions,
@@ -154,6 +156,7 @@ export {
   NotARepositoryError,
   PathOutsideRepoError,
   PathspecNotFoundError,
+  RemoteNotAllowedError,
 } from "./errors.js";
 export type { GitInitOptions } from "./init.js";
 export type {
@@ -200,6 +203,15 @@ export type {
   GitTagListOptions,
   GitTagOptions,
 } from "./refs.js";
+export {
+  checkGitRemoteUrl,
+  type GitRemotePolicy,
+  isPrivateHost,
+  NETWORK_GIT_SUBCOMMANDS,
+  type NetworkGitSubcommand,
+  networkGitSubcommand,
+  type RemoteUrlVerdict,
+} from "./remote-policy.js";
 export type { GitAddOptions, GitRmOptions } from "./staging.js";
 export type { GitStatusOptions, StatusEntry } from "./status.js";
 export type {
@@ -334,6 +346,20 @@ export interface CreateGitClientOptions {
    * Production callers do not pass this.
    */
   adapter?: (provider: SQLiteWorkspaceProvider) => Promise<IsomorphicGitFSClient>;
+  /**
+   * Restrictions applied to the remote URL of every network
+   * operation (`clone`, `fetch`, `pull`, `push`, and storing a
+   * remote with `remoteAdd`).
+   *
+   * These requests leave from wherever the client runs — for the
+   * worker-shell backend that is the host durable object, not the
+   * sandbox Dynamic Worker whose `globalOutbound` the egress
+   * policy configures. The default policy therefore refuses plain
+   * http and any private, loopback, or link-local host, so a
+   * sandboxed agent cannot use git to reach internal services.
+   * Widen it deliberately.
+   */
+  remotePolicy?: GitRemotePolicy;
 }
 
 export type GitClientFactory = (options: WorkspaceGitClientOptions) => GitClient;
@@ -360,6 +386,7 @@ export type GitClientFactory = (options: WorkspaceGitClientOptions) => GitClient
  */
 export function createGitClient({
   adapter = workspaceIsomorphicGitClient,
+  remotePolicy = {},
 }: CreateGitClientOptions = {}): GitClientFactory {
   return function createWorkspaceGitClient({
     ws,
@@ -392,8 +419,34 @@ export function createGitClient({
       return createPatchPromise;
     };
 
+    // Every network operation resolves its destination first and
+    // runs it past the remote policy. A named remote has to be
+    // resolved from the repository config: the URL is what leaves
+    // the machine, so checking the argv alone would let `git
+    // remote add evil <url>` followed by `git fetch evil` walk
+    // straight past the gate.
+    const enforceRemotePolicy = async (
+      operation: string,
+      options: { dir?: string; url?: string; remote?: string },
+    ): Promise<void> => {
+      let url = options.url;
+      if (url === undefined) {
+        const remotes = await client.remoteList({ dir: options.dir });
+        const name = options.remote ?? "origin";
+        url = remotes.find((remote) => remote.name === name)?.url;
+        // No such remote. Let the underlying operation report it;
+        // nothing reaches the network either way.
+        if (url === undefined) return;
+      }
+      const verdict = checkGitRemoteUrl(url, remotePolicy);
+      if (!verdict.allowed) {
+        throw new RemoteNotAllowedError(`${operation}: ${verdict.reason}`);
+      }
+    };
+
     const client: GitClient = {
       async clone(options) {
+        await enforceRemotePolicy("clone", { dir: options.dir, url: options.url });
         await cloneWith({
           ...options,
           fs: await fs(),
@@ -565,6 +618,7 @@ export function createGitClient({
         });
       },
       async fetch(options = {}) {
+        await enforceRemotePolicy("fetch", options);
         return fetchWith({
           ...options,
           fs: await fs(),
@@ -574,6 +628,7 @@ export function createGitClient({
         });
       },
       async push(options = {}) {
+        await enforceRemotePolicy("push", options);
         return pushWith({
           ...options,
           fs: await fs(),
@@ -583,6 +638,7 @@ export function createGitClient({
         });
       },
       async pull(options = {}) {
+        await enforceRemotePolicy("pull", options);
         return pullWith({
           ...options,
           fs: await fs(),
@@ -602,6 +658,7 @@ export function createGitClient({
         });
       },
       async remoteAdd(options) {
+        await enforceRemotePolicy("remote add", { dir: options.dir, url: options.url });
         return remoteAddWith({
           ...options,
           fs: await fs(),
@@ -696,7 +753,7 @@ export function createGitClient({
         });
       },
       async cli(input) {
-        return runGitCli(client, input, { defaultIdentity });
+        return runGitCli(client, input, { defaultIdentity, remotePolicy });
       },
     };
     return client;

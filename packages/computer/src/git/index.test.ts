@@ -50,4 +50,47 @@ describe("createGitClient", () => {
     expect(provider).toHaveBeenCalledTimes(1);
     expect(adapter).toHaveBeenCalledTimes(1);
   });
+
+  it("refuses a denied remote before touching the workspace", async () => {
+    const provider = vi.fn(() => opaqueProvider);
+    const adapter = vi.fn(async () => stubFs());
+    const client = createGitClient({ adapter })({ ws: { provider } });
+
+    await expect(client.clone({ url: "https://169.254.169.254/r.git" })).rejects.toThrow(
+      /private or local address/,
+    );
+    await expect(client.push({ url: "http://example.test/r.git" })).rejects.toThrow(
+      /insecure transport/,
+    );
+    // The check runs ahead of the adapter, so no filesystem or
+    // network work happens for a refused destination.
+    expect(provider).not.toHaveBeenCalled();
+    expect(adapter).not.toHaveBeenCalled();
+  });
+
+  it("resolves a named remote and applies the policy to its stored URL", async () => {
+    const client = createGitClient({ adapter: async () => stubFs() })({
+      ws: { provider: () => opaqueProvider },
+    });
+    // `git remote add` on a repository created before the policy
+    // existed, or through any other writer, must not become a
+    // bypass: the URL behind the name is what gets checked.
+    client.remoteList = async () => [{ name: "evil", url: "https://127.0.0.1/r.git" }];
+
+    await expect(client.fetch({ remote: "evil" })).rejects.toThrow(/private or local address/);
+    await expect(client.push({ remote: "evil" })).rejects.toThrow(/private or local address/);
+    await expect(client.pull({ remote: "evil" })).rejects.toThrow(/private or local address/);
+  });
+
+  it("honours a widened policy", async () => {
+    const client = createGitClient({
+      adapter: async () => stubFs(),
+      remotePolicy: { allowPrivateHosts: true },
+    })({ ws: { provider: () => opaqueProvider } });
+
+    // Past the policy, so it fails inside isomorphic-git instead.
+    await expect(client.clone({ url: "https://127.0.0.1/r.git" })).rejects.not.toThrow(
+      /private or local address/,
+    );
+  });
 });

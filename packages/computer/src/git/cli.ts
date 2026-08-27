@@ -21,6 +21,7 @@ import {
   PathspecNotFoundError,
 } from "./errors.js";
 import type { CommitView, DiffSummaryEntry, GitClient, GitIdentity, StatusEntry } from "./index.js";
+import { checkGitRemoteUrl, type GitRemotePolicy } from "./remote-policy.js";
 import { formatPorcelainV1, formatPorcelainV2, formatShort } from "./status.js";
 
 export interface GitCliInput {
@@ -54,12 +55,20 @@ export interface RunGitCliOptions {
    * `input.env` and the client resolves the precedence.
    */
   defaultIdentity?: GitIdentity;
+  /**
+   * Restrictions on the remote URLs the network subcommands may
+   * contact. The dispatcher rejects a denied URL before it calls
+   * the client; the client applies the same policy again, which
+   * is what catches a URL that arrives through a named remote.
+   * Defaults to the strict policy in `remote-policy.ts`.
+   */
+  remotePolicy?: GitRemotePolicy;
 }
 
 export async function runGitCli(
   client: GitClient,
   input: GitCliInput,
-  _options: RunGitCliOptions = {},
+  options: RunGitCliOptions = {},
 ): Promise<GitCliResult> {
   // Strip leading global options (currently only `-C <path>`)
   // before the subcommand. Real git accepts these between `git`
@@ -85,7 +94,7 @@ export async function runGitCli(
     case "--version":
       return printVersion();
     case "clone":
-      return await runClone(client, rest, input);
+      return await runClone(client, rest, input, options.remotePolicy);
     case "diff":
       return await runDiff(client, rest, input);
     case "init":
@@ -119,15 +128,15 @@ export async function runGitCli(
     case "switch":
       return await runSwitch(client, rest, input);
     case "fetch":
-      return await runFetch(client, rest, input);
+      return await runFetch(client, rest, input, options.remotePolicy);
     case "push":
-      return await runPush(client, rest, input);
+      return await runPush(client, rest, input, options.remotePolicy);
     case "pull":
-      return await runPull(client, rest, input);
+      return await runPull(client, rest, input, options.remotePolicy);
     case "merge":
       return await runMerge(client, rest, input);
     case "remote":
-      return await runRemote(client, rest, input);
+      return await runRemote(client, rest, input, options.remotePolicy);
     case "hash-object":
       return await runHashObject(client, rest, input);
     case "cat-file":
@@ -215,6 +224,7 @@ async function runClone(
   client: GitClient,
   args: string[],
   input: GitCliInput,
+  policy: GitRemotePolicy | undefined,
 ): Promise<GitCliResult> {
   // `git clone [--depth N] [--branch B] [--single-branch | --no-single-branch]
   //            [--no-tags] [--bare? rejected] <url> [<dir>]`
@@ -241,12 +251,9 @@ async function runClone(
     };
   }
   const [url, dirArg] = positional;
-  if (!isSupportedRemoteUrl(url)) {
-    return {
-      stdout: "",
-      stderr: `git clone: unsupported transport for '${url}'. Only https://, http://, and file:// are supported.\n`,
-      exitCode: 1,
-    };
+  const cloneVerdict = checkGitRemoteUrl(url, policy);
+  if (!cloneVerdict.allowed) {
+    return { stdout: "", stderr: `git clone: ${cloneVerdict.reason}\n`, exitCode: 1 };
   }
   let dir: string;
   if (dirArg !== undefined && dirArg !== "") {
@@ -1359,6 +1366,7 @@ async function runFetch(
   client: GitClient,
   args: string[],
   input: GitCliInput,
+  policy: GitRemotePolicy | undefined,
 ): Promise<GitCliResult> {
   // `git fetch [<remote>] [<ref>] [--depth N] [--no-tags] [--prune]`
   const parsed = parseFlags(args, {
@@ -1401,12 +1409,11 @@ async function runFetch(
     depth = n;
   }
 
-  if (url !== undefined && !isSupportedRemoteUrl(url)) {
-    return {
-      stdout: "",
-      stderr: `git fetch: unsupported transport for '${url}'. Only https://, http://, and file:// are supported.\n`,
-      exitCode: 1,
-    };
+  if (url !== undefined) {
+    const verdict = checkGitRemoteUrl(url, policy);
+    if (!verdict.allowed) {
+      return { stdout: "", stderr: `git fetch: ${verdict.reason}\n`, exitCode: 1 };
+    }
   }
 
   let singleBranch: boolean | undefined;
@@ -1442,6 +1449,7 @@ async function runPush(
   client: GitClient,
   args: string[],
   input: GitCliInput,
+  policy: GitRemotePolicy | undefined,
 ): Promise<GitCliResult> {
   // `git push [<remote>] [<ref>] [--force] [--delete]`
   const parsed = parseFlags(args, {
@@ -1464,12 +1472,11 @@ async function runPush(
   const remote = looksLikeUrl ? undefined : first;
   const refspec = parsePushRefspec(looksLikeUrl ? second : (second ?? undefined));
 
-  if (url !== undefined && !isSupportedRemoteUrl(url)) {
-    return {
-      stdout: "",
-      stderr: `git push: unsupported transport for '${url}'. Only https://, http://, and file:// are supported.\n`,
-      exitCode: 1,
-    };
+  if (url !== undefined) {
+    const verdict = checkGitRemoteUrl(url, policy);
+    if (!verdict.allowed) {
+      return { stdout: "", stderr: `git push: ${verdict.reason}\n`, exitCode: 1 };
+    }
   }
 
   const dir = resolveDir(undefined, input.cwd);
@@ -1510,6 +1517,7 @@ async function runPull(
   client: GitClient,
   args: string[],
   input: GitCliInput,
+  policy: GitRemotePolicy | undefined,
 ): Promise<GitCliResult> {
   // `git pull [<remote>] [<ref>] [--ff-only] [--no-ff]`
   const parsed = parseFlags(args, {
@@ -1532,12 +1540,11 @@ async function runPull(
   const remote = looksLikeUrl ? undefined : first;
   const ref = looksLikeUrl ? second : (second ?? undefined);
 
-  if (url !== undefined && !isSupportedRemoteUrl(url)) {
-    return {
-      stdout: "",
-      stderr: `git pull: unsupported transport for '${url}'. Only https://, http://, and file:// are supported.\n`,
-      exitCode: 1,
-    };
+  if (url !== undefined) {
+    const verdict = checkGitRemoteUrl(url, policy);
+    if (!verdict.allowed) {
+      return { stdout: "", stderr: `git pull: ${verdict.reason}\n`, exitCode: 1 };
+    }
   }
 
   const dir = resolveDir(undefined, input.cwd);
@@ -1625,6 +1632,7 @@ async function runRemote(
   client: GitClient,
   args: string[],
   input: GitCliInput,
+  policy: GitRemotePolicy | undefined,
 ): Promise<GitCliResult> {
   // `git remote`              -> list (names only)
   // `git remote -v`           -> list (name + url, tab separated, twice)
@@ -1678,12 +1686,9 @@ async function runRemote(
         };
       }
       const [name, url] = parsed.positional;
-      if (!isSupportedRemoteUrl(url)) {
-        return {
-          stdout: "",
-          stderr: `git remote add: unsupported transport for '${url}'.\n`,
-          exitCode: 1,
-        };
+      const verdict = checkGitRemoteUrl(url, policy);
+      if (!verdict.allowed) {
+        return { stdout: "", stderr: `git remote add: ${verdict.reason}\n`, exitCode: 1 };
       }
       try {
         await client.remoteAdd({ dir, name, url, force: parsed.flags.force === true });
@@ -2358,10 +2363,6 @@ async function resolveRevisionRef(
 ): Promise<string | undefined> {
   if (ref === undefined || !hasRevisionSuffix(ref)) return ref;
   return client.revParse({ dir, ref });
-}
-
-function isSupportedRemoteUrl(url: string): boolean {
-  return url.startsWith("https://") || url.startsWith("http://") || url.startsWith("file://");
 }
 
 function errorMessage(cause: unknown): string {

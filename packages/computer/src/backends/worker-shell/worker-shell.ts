@@ -117,6 +117,19 @@ export interface WorkerShellBackendOptions {
 
   egress?: WorkspaceEgressPolicy;
 
+  // Allow the shell's `git` command to run the subcommands that
+  // talk to a remote (`clone`, `fetch`, `pull`, `push`). Defaults
+  // to false.
+  //
+  // Those requests are served by the host DO, so `egress` does not
+  // cover them: the Dynamic Worker's globalOutbound only governs
+  // the isolate's own fetches. Without this gate a shell agent
+  // could reach any host the DO can reach even under
+  // `egress: { mode: "none" }`. Opting in still leaves the git
+  // client's remote policy in force, so git reaches public https
+  // remotes rather than loopback or metadata addresses.
+  allowGitNetwork?: boolean;
+
   // Selector this backend is registered under in Workspace.
   // Defaults to "worker-shell"; override when the workspace hosts
   // more than one instance of the same backend kind (e.g. two
@@ -226,7 +239,10 @@ export class WorkerShellBackend implements WorkspaceBackend {
     if (this.#egressCacheKey === undefined) {
       this.#egressCacheKey = egressCacheKey(this.#egress);
     }
-    const loaderId = `${this.#options.loaderId ?? `workspace-shell:${workspace.id}`}:${this.#egressCacheKey}`;
+    // The gate rides in the loader env, and `loader.get` caches by
+    // id, so it belongs in the key beside the egress policy.
+    const allowGitNetwork = this.#options.allowGitNetwork === true;
+    const loaderId = `${this.#options.loaderId ?? `workspace-shell:${workspace.id}`}:${this.#egressCacheKey}:git-${allowGitNetwork ? "net" : "local"}`;
     const compatibilityDate = this.#options.compatibilityDate ?? DEFAULT_COMPAT_DATE;
     const compatibilityFlags = this.#options.compatibilityFlags
       ? [...DEFAULT_COMPAT_FLAGS, ...this.#options.compatibilityFlags]
@@ -246,6 +262,7 @@ export class WorkerShellBackend implements WorkspaceBackend {
         // the proxy resolves env[binding].get(id).getWorkspace()
         // on the host side.
         HOST: ctx.exports.WorkspaceServiceProxy({ props: workspace }),
+        ALLOW_GIT_NETWORK: allowGitNetwork,
       },
       ...dynamicWorkerEgress(this.#egress),
     }));

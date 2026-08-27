@@ -97,6 +97,10 @@ export class Assistant extends withWorkspaceContainer(AssistantBase) {
         loader: this.env.LOADER,
         workspace: workspaceRef(this.ctx),
         ctx: this.ctx,
+        // The shell's git is how this agent pulls a repository in,
+        // so it opts into the network subcommands the backend
+        // withholds by default.
+        allowGitNetwork: true,
       }),
       this.#containerBackend,
     ],

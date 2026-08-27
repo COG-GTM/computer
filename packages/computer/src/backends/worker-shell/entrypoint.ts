@@ -50,6 +50,15 @@ export interface ShellWorkerOptions {
   // custom SecureFetch to add an allow-list or credential
   // injection, or `null` to drop curl entirely.
   fetch?: SecureFetch | null;
+  // Allow the network git subcommands (`clone`, `fetch`, `pull`,
+  // `push`) from the shell. Off by default. Those requests run on
+  // the host Durable Object, so they are not covered by the
+  // Dynamic Worker's globalOutbound and an untrusted shell would
+  // otherwise reach the wire through git no matter what the egress
+  // policy says. The gate mirrors the worker-javascript bridge's
+  // `allowGitNetwork`; the host-side remote policy still applies
+  // on top of it.
+  allowGitNetwork?: boolean;
 }
 
 // Default curl fetch: adapt the isolate's global `fetch` to
@@ -91,6 +100,11 @@ export interface ShellWorkerEnv {
   // WorkerEntrypoint-derived Fetcher does, because the runtime
   // serializes it as a binding reference.
   HOST: ShellHostFetcher;
+  // Set by WorkerShellBackend from its `allowGitNetwork` option.
+  // Anything but a true boolean (or the string spelling a JSON
+  // binding can arrive as) leaves the shell's `git` refusing the
+  // network-bound subcommands.
+  ALLOW_GIT_NETWORK?: boolean | string;
 }
 
 // Subset of the WorkspaceServiceProxy Fetcher the shell uses.
@@ -166,6 +180,14 @@ export class ShellWorker<
     return [];
   }
 
+  // The backend passes the operator's decision through the loader
+  // env; a subclass that builds its own shell can set it in
+  // shellOptions instead. Either opts in; the default is off.
+  #allowGitNetwork(): boolean {
+    if (this.shellOptions.allowGitNetwork === true) return true;
+    return this.env.ALLOW_GIT_NETWORK === true || this.env.ALLOW_GIT_NETWORK === "true";
+  }
+
   override async fetch(_request: Request): Promise<Response> {
     return new Response(
       "ShellWorker is invoked over Workers RPC — dispatch through the Workspace's WorkerShellBackend.",
@@ -201,7 +223,7 @@ export class ShellWorker<
     }
 
     const customCommands: CustomCommand[] = [
-      defineGitCommand(ws),
+      defineGitCommand(ws, { allowNetwork: this.#allowGitNetwork() }),
       defineAssetsCommand(ws),
       defineArtifactsCommand({ artifacts: ws.artifacts, git: ws.git }),
       ...this.extraCommands(ws),

@@ -99,9 +99,15 @@ reuse an isolate until the gateway policy changes. Without one, the backend
 uses a fresh cache identity for each backend lifetime.
 
 These modes govern ambient `fetch()` and `connect()` calls from the shell.
-Host-side capabilities remain separate; for example, the host-forwarded Git
-command can have its own network authority while ambient shell networking is
-blocked.
+Host-side capabilities remain separate, so they carry their own gates: the
+host-forwarded Git command refuses `clone`, `fetch`, `pull`, and `push`
+unless the backend is constructed with `allowGitNetwork: true`, because
+those requests are issued by the host durable object and no egress mode
+covers them. Opting in still leaves the git client's remote policy in
+force, which by default admits only public `https://` hosts (see
+[`docs/13_git_interface.md`](./13_git_interface.md)). The gate is part of
+the isolate's cache identity, so a shell with git network authority never
+reuses one without it.
 
 ## Built-in custom commands
 
@@ -109,6 +115,7 @@ The worker backend registers two just-bash custom commands on every
 exec:
 
 - `git ...` forwards to the host workspace's `workspace.git.cli(...)`.
+  The network subcommands require `allowGitNetwork: true`.
 - `assets publish <path> [<expiry>]` forwards to the host
   workspace's configured assets publisher and prints the share URL
   to stdout.

@@ -127,6 +127,47 @@ describe("defineGitCommand", () => {
     expect(res).toMatchObject({ stdout: "ok\n", stderr: "warn\n", exitCode: 7 });
   });
 
+  it("refuses the network subcommands unless network access is enabled", async () => {
+    // The shell isolate has globalOutbound: null, but the fetch
+    // behind these four runs host-side, where the egress policy
+    // has no reach. The gate is what keeps an untrusted shell from
+    // using git as an unpoliced socket.
+    const { host, calls } = fakeHost(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const cmd = defineGitCommand(host);
+    for (const argv of [
+      ["clone", "https://example.test/r.git"],
+      ["fetch", "origin"],
+      ["pull"],
+      ["push", "origin", "main"],
+      ["-C", "/repo", "push"],
+    ]) {
+      const res = await cmd.execute(argv, makeCtx());
+      expect(res.exitCode, argv.join(" ")).toBe(1);
+      expect(res.stderr, argv.join(" ")).toContain("network access is disabled");
+      expect(res.stdout).toBe("");
+    }
+    // Refused before the host RPC, so nothing reached the wire.
+    expect(calls).toEqual([]);
+  });
+
+  it("still runs the local subcommands with network access disabled", async () => {
+    const { host, calls } = fakeHost(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const cmd = defineGitCommand(host);
+    for (const argv of [["status"], ["commit", "-m", "x"], ["remote", "-v"], ["log"]]) {
+      expect((await cmd.execute(argv, makeCtx())).exitCode, argv.join(" ")).toBe(0);
+    }
+    expect(calls).toHaveLength(4);
+  });
+
+  it("forwards the network subcommands when allowNetwork is set", async () => {
+    const { host, calls } = fakeHost(() => ({ stdout: "done\n", stderr: "", exitCode: 0 }));
+    const cmd = defineGitCommand(host, { allowNetwork: true });
+    const res = await cmd.execute(["clone", "https://example.test/r.git"], makeCtx());
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout).toBe("done\n");
+    expect(calls[0].argv).toEqual(["clone", "https://example.test/r.git"]);
+  });
+
   it("surfaces a host RPC throw as exit 1 with the message on stderr", async () => {
     // If the workspace stub is gone (transport hiccup, parent
     // disposed mid-call) the cli() call rejects. The shell should

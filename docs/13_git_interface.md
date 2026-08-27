@@ -53,9 +53,10 @@ Global options accepted before the subcommand:
 Deliberate omissions, with rationale:
 
 - **SSH transport.** `isomorphic-git` has none. `https://`,
-  `http://`, and `file://` are the only supported URL schemes;
-  every command that takes a URL validates the scheme up
-  front and refuses anything else.
+  `http://`, and `file://` are the only URL schemes the client
+  can speak, and `http://` is refused unless the remote policy
+  allows it; every command that takes a URL validates the
+  destination up front and refuses anything else.
 - **Partial clone (`--filter=blob:none`).** `isomorphic-git`
   doesn't speak the v2 `filter` capability. `paths` on
   `clone` provides partial *checkout* (the working tree is
@@ -144,6 +145,9 @@ const { stdout } = await handle.result();
 
 The shell-side `git` is the same dispatcher behind a custom
 command; the just-bash shell never resolves a binary on PATH.
+The clone above needs `allowGitNetwork: true` on the
+`WorkerShellBackend`; without it the shell only runs the local
+subcommands.
 The sibling [`artifacts` command](./15_artifacts_interface.md)
 follows the same pattern through `workspace.artifacts.cli(...)` when the Workspace is configured with an Artifacts binding.
 
@@ -236,7 +240,46 @@ shell produces no output until the call returns; streaming
 progress would need a second exec-event channel. The shell
 isolate has `globalOutbound: null`, so network requests
 themselves happen on the host durable object, not in the
-isolate — they work despite the restriction.
+isolate — which is why they are gated separately, both by the
+remote policy below and by the shell backend's
+`allowGitNetwork` option.
+
+### Remote policy
+
+Every network operation resolves its destination and checks it
+before anything leaves the machine. `clone`, `fetch`, `pull`,
+and `push` all go through the check, as does storing a URL with
+`remote add`, and a named remote is resolved from the repository
+config first — otherwise `git remote add evil <url> && git fetch
+evil` would walk straight past the gate.
+
+The default policy accepts `https://` remotes on public hosts
+and `file://` URLs, which never leave the workspace. It rejects
+plain `http://`, every other transport, and any host that names
+the local machine or a private network: `localhost` and friends,
+loopback, `169.254.0.0/16` (where the cloud metadata endpoints
+live), RFC 1918, carrier-grade NAT, and the IPv6 equivalents.
+The operation fails with a `RemoteNotAllowedError`; the CLI
+reports it as exit 1.
+
+Widen it deliberately through `createGitClient`:
+
+```ts
+createGitClient({
+  remotePolicy: {
+    // Only these hosts, subdomains included.
+    allowedHosts: ["github.com", "*.githubusercontent.com"],
+    // Both off by default.
+    allowInsecureTransport: false,
+    allowPrivateHosts: false,
+  },
+});
+```
+
+The policy is a destination allowlist, not an egress gateway:
+the request still originates from the durable object. Route it
+through a gateway when the operator's policy has to cover git
+too.
 
 ### `cache`
 
@@ -572,9 +615,10 @@ name exits 129; pass an explicit destination. After clone, HEAD
 is a symbolic ref to the checked-out branch, so `branch
 --show-current` and `symbolic-ref HEAD` work immediately.
 
-Only `https://`, `http://`, and `file://` schemes are
-accepted. *Not mapped:* `--bare`, `--mirror`, `--recurse-
-submodules`, `--filter`, ssh URLs.
+Only `https://` and `file://` are accepted by default; see
+"Remote policy" for `http://` and for the host rules. *Not
+mapped:* `--bare`, `--mirror`, `--recurse-submodules`,
+`--filter`, ssh URLs.
 
 ### `diff`
 
@@ -1080,13 +1124,21 @@ class MyShell extends ShellWorker {
 
 Two properties of the shell-side path worth pinning:
 
-- **Network commands work despite `globalOutbound: null`.**
+- **Network commands are gated, because they run host-side.**
   The Dynamic Worker hosting the shell has its globalOutbound
   set to `null`, blocking all outbound HTTP. `git clone`,
-  `git fetch`, `git pull`, and `git push` still work because
-  the actual HTTP request happens on the host durable object
-  side, not in the shell isolate. The shell just hands the
-  argv across the loopback and waits for the result.
+  `git fetch`, `git pull`, and `git push` could still reach the
+  wire, because the actual HTTP request happens on the host
+  durable object side rather than in the shell isolate — which
+  means the workspace egress policy never sees it. The shell
+  therefore refuses those four subcommands unless the operator
+  passes `allowGitNetwork: true` to `WorkerShellBackend`, the
+  counterpart of the same option on the worker-javascript
+  bridge. Local subcommands are unaffected. Whether or not the
+  gate is open, the host-side client still runs the destination
+  past its remote policy (see "Remote policy" above), so git
+  cannot be turned into a probe for loopback or metadata
+  addresses.
 - **Progress is buffered.** A long `clone` produces no output
   until the call returns. Progress callbacks fire on the host
   side; their output is collected into stderr and flushed at

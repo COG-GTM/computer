@@ -2340,3 +2340,73 @@ describe("runGitCli — end-to-end against an in-process Workspace", () => {
     expect(res.stdout).toBe("");
   });
 });
+
+describe("runGitCli remote policy", () => {
+  it("refuses a private, loopback, or metadata host on every network subcommand", async () => {
+    const { client, calls } = fakeClient();
+    const cases: Array<[string, string[]]> = [
+      ["clone", ["clone", "https://169.254.169.254/latest.git"]],
+      ["fetch", ["fetch", "https://127.0.0.1/r.git"]],
+      ["push", ["push", "https://10.0.0.5/r.git"]],
+      ["pull", ["pull", "https://localhost/r.git"]],
+    ];
+    for (const [name, argv] of cases) {
+      const res = await runGitCli(client, { argv });
+      expect(res.exitCode, name).toBe(1);
+      expect(res.stderr, name).toContain("private or local address");
+    }
+    // Nothing reached the client, so nothing reached the wire.
+    expect(calls.clone).toEqual([]);
+    expect(calls.fetch).toEqual([]);
+    expect(calls.push).toEqual([]);
+    expect(calls.pull).toEqual([]);
+  });
+
+  it("refuses http:// by default and honours an explicit policy", async () => {
+    const { client } = fakeClient();
+    const denied = await runGitCli(client, { argv: ["clone", "http://example.test/r.git"] });
+    expect(denied.exitCode).toBe(1);
+    expect(denied.stderr).toContain("insecure transport");
+
+    const allowed = await runGitCli(
+      client,
+      { argv: ["clone", "http://example.test/r.git"] },
+      { remotePolicy: { allowInsecureTransport: true } },
+    );
+    expect(allowed.exitCode).toBe(0);
+  });
+
+  it("honours an allowedHosts policy", async () => {
+    const { client } = fakeClient();
+    const options = { remotePolicy: { allowedHosts: ["github.com"] } };
+    const argv = ["clone", "https://example.test/r.git"];
+    const denied = await runGitCli(client, { argv }, options);
+    expect(denied.exitCode).toBe(1);
+    expect(denied.stderr).toContain("not in the allowed");
+    const allowed = await runGitCli(
+      client,
+      { argv: ["clone", "https://github.com/e/r.git"] },
+      options,
+    );
+    expect(allowed.exitCode).toBe(0);
+  });
+
+  it("`remote add` cannot store a URL a later fetch would be refused for", async () => {
+    const { client, calls } = fakeClient();
+    const res = await runGitCli(client, {
+      argv: ["remote", "add", "evil", "https://169.254.169.254/r.git"],
+    });
+    expect(res.exitCode).toBe(1);
+    expect(res.stderr).toContain("private or local address");
+    expect(calls.remoteAdd).toEqual([]);
+  });
+
+  it("still allows public https and file remotes", async () => {
+    const { client, calls } = fakeClient();
+    const https = await runGitCli(client, { argv: ["clone", "https://example.test/r.git"] });
+    expect(https.exitCode).toBe(0);
+    const local = await runGitCli(client, { argv: ["clone", "file:///workspace/other.git"] });
+    expect(local.exitCode).toBe(0);
+    expect(calls.clone).toHaveLength(2);
+  });
+});

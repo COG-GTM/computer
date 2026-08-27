@@ -92,6 +92,17 @@ export class PathspecNotFoundError extends GitError {
 }
 
 /**
+ * Raised when the remote policy refuses the URL a network
+ * operation was about to contact. CLI exit code: 1.
+ */
+export class RemoteNotAllowedError extends GitError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super("EREMOTEDENIED", message, options);
+    this.name = "RemoteNotAllowedError";
+  }
+}
+
+/**
  * Heuristic for "no .git in this directory". isomorphic-git
  * throws a `NotFoundError` with `.caller === "readObject"` (or
  * similar) when the gitdir is missing; we surface that as a

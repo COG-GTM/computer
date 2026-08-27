@@ -62,6 +62,10 @@ export class ArtifactCreator extends withWorkspace(class extends DurableObject<E
     loader: env.LOADER as unknown as WorkerShellBackendOptions["loader"],
     workspace: { binding: "ArtifactCreator", id: ctx.id.toString() },
     ctx,
+    // The demo clones the source repo and pushes the generated
+    // project from the shell, so the shell needs the network git
+    // subcommands the backend withholds by default.
+    allowGitNetwork: true,
   };
   return {
     storage: ctx.storage as unknown as DurableObjectStorageLike,

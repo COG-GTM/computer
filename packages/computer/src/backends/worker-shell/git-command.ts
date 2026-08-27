@@ -4,9 +4,15 @@
 // its own (the loader sets `globalOutbound: null` — see worker.ts).
 // Every `git` invocation here forwards across the loopback to the
 // host DO's `workspace.git.cli(...)`. The actual fetch happens on
-// the DO side, which is fine: network-bound subcommands (`clone`,
-// `fetch`, `pull`, `push`) work even though the shell isolate
-// cannot itself reach the wire.
+// the DO side, so network-bound subcommands (`clone`, `fetch`,
+// `pull`, `push`) escape the isolate's egress boundary entirely:
+// the DO's request is never seen by `globalOutbound`. That is why
+// they are refused here unless the host Worker opts in with
+// `allowNetwork`, mirroring the `allowGitNetwork` gate the
+// worker-javascript bridge puts in front of the same operations.
+// The host-side client still applies its own remote policy, so
+// opting in widens the gate to public https remotes, not to
+// loopback or metadata addresses.
 //
 // Keeping this file dumb is deliberate. Argv parsing and every
 // behavioural choice for the CLI lives in `git/cli.ts`; this
@@ -51,12 +57,23 @@ function decodeLatin1ToUtf8(b: string): string {
 }
 
 import type { GitCliInput, GitCliResult } from "../../git/index.js";
+import { networkGitSubcommand } from "../../git/remote-policy.js";
 
 /** Structural subset of the host stub the command needs. */
 export interface GitCommandHost {
   git: {
     cli(input: GitCliInput): Promise<GitCliResult>;
   };
+}
+
+export interface GitCommandOptions {
+  /**
+   * Allow the subcommands that talk to a remote. Off by default:
+   * the request runs host-side, outside the sandbox's egress
+   * policy, so a shell agent must not be able to reach the wire
+   * through git unless the operator says so.
+   */
+  allowNetwork?: boolean;
 }
 
 /**
@@ -73,8 +90,21 @@ export interface GitCommandHost {
  * via the existing `finally` block; there's no new disposal
  * contract here.
  */
-export function defineGitCommand(ws: GitCommandHost): CustomCommand {
+export function defineGitCommand(
+  ws: GitCommandHost,
+  options: GitCommandOptions = {},
+): CustomCommand {
   return defineCommand("git", async (args, ctx) => {
+    if (options.allowNetwork !== true) {
+      const network = networkGitSubcommand(args);
+      if (network !== undefined) {
+        return {
+          stdout: "",
+          stderr: `git ${network}: network access is disabled for this shell. Set allowGitNetwork on the shell worker options to enable it.\n`,
+          exitCode: 1,
+        };
+      }
+    }
     // Bash gives us the env as a Map<string, string>. The CLI
     // dispatcher takes a plain Record<string, string>; flatten
     // once here so the CLI doesn't have to care.
