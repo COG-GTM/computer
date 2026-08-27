@@ -244,6 +244,12 @@ export class CloudflareContainerBackend implements WorkspaceBackend {
       PORT: String(this.#options.containerPort),
       MOUNT_POINT: "/workspace",
       ...this.#options.containerEnv,
+      // The one endpoint the daemon is allowed to dial back into. It
+      // sits after the caller's environment because widening it is not
+      // a container-configuration decision: everything inside the
+      // container can reach the daemon's port, and a dial hands the
+      // peer the workspace's files and shell.
+      CONNECT_ALLOWED_ORIGINS: `http://${this.#options.egressHost}`,
     };
     let runtimeId: string;
     // The container requires this on its HTTP surface. It is durable, so

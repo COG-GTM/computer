@@ -379,6 +379,108 @@ test.each([
   expect(stderr).toMatch(/FUSE_MOUNT/);
 });
 
+test("computerd rejects invalid CONNECT_ALLOWED_ORIGINS at boot", async () => {
+  const port = await getAvailablePort();
+  const child = spawn(cliPath, {
+    cwd: packageRoot,
+    env: {
+      ...process.env,
+      MOUNT_POINT: "/tmp/computerd-mount-not-used",
+      PORT: String(port),
+      FUSE_MOUNT: "none",
+      CONNECT_ALLOWED_ORIGINS: "not-a-url",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+
+  const { code, stderr } = await waitForExit(child);
+  expect(code).toBe(1);
+  expect(stderr).toMatch(/CONNECT_ALLOWED_ORIGINS entries must be http:\/\/ or https:\/\//);
+});
+
+test("/connect refuses an off-allowlist base before probing it", async () => {
+  const requests = [];
+  const peerPort = await getAvailablePort();
+  const peerServer = http.createServer((req, res) => {
+    requests.push(req.url);
+    res.writeHead(200).end();
+  });
+  await new Promise((resolve) => peerServer.listen(peerPort, "127.0.0.1", resolve));
+  onTestFinished(() => new Promise((resolve) => peerServer.close(() => resolve())));
+
+  const port = await getAvailablePort();
+  const mountPoint = await fs.mkdtemp(path.join(os.tmpdir(), "computerd-connect-"));
+  await startComputerd({
+    port,
+    mountPoint,
+    env: { FUSE_MOUNT: "none", CONNECT_ALLOWED_ORIGINS: "http://computer.internal" },
+  });
+
+  const response = await postJson(`http://127.0.0.1:${port}/connect`, {
+    base: `http://127.0.0.1:${peerPort}`,
+    health: "/health",
+    api: "/api",
+  });
+  expect(response.statusCode).toBe(403);
+  expect(requests).toEqual([]);
+});
+
+test("/connect uses a closed default when CONNECT_ALLOWED_ORIGINS is unset", async () => {
+  const requests = [];
+  const peerPort = await getAvailablePort();
+  const peerServer = http.createServer((req, res) => {
+    requests.push(req.url);
+    res.writeHead(200).end();
+  });
+  await new Promise((resolve) => peerServer.listen(peerPort, "127.0.0.1", resolve));
+  onTestFinished(() => new Promise((resolve) => peerServer.close(() => resolve())));
+
+  const port = await getAvailablePort();
+  const mountPoint = await fs.mkdtemp(path.join(os.tmpdir(), "computerd-connect-default-"));
+  await startComputerd({
+    port,
+    mountPoint,
+    env: { FUSE_MOUNT: "none" },
+    unsetEnv: ["CONNECT_ALLOWED_ORIGINS"],
+  });
+
+  const response = await postJson(`http://127.0.0.1:${port}/connect`, {
+    base: `http://127.0.0.1:${peerPort}`,
+    health: "/health",
+    api: "/api",
+  });
+  expect(response.statusCode).toBe(403);
+  expect(requests).toEqual([]);
+});
+
+test("/connect rejects credentials and query or fragment components", async () => {
+  const port = await getAvailablePort();
+  const mountPoint = await fs.mkdtemp(path.join(os.tmpdir(), "computerd-connect-canonical-"));
+  await startComputerd({
+    port,
+    mountPoint,
+    env: { FUSE_MOUNT: "none", CONNECT_ALLOWED_ORIGINS: "http://127.0.0.1" },
+  });
+  const url = `http://127.0.0.1:${port}/connect`;
+  const common = { health: "/health", api: "/api" };
+
+  for (const base of [
+    "http://user:pass@127.0.0.1/",
+    "http://127.0.0.1/?x=1",
+    "http://127.0.0.1/#fragment",
+  ]) {
+    const response = await postJson(url, { ...common, base });
+    expect(response.statusCode, base).toBe(403);
+  }
+
+  const defaultPort = await postJson(url, {
+    ...common,
+    base: "http://127.0.0.1:80",
+    healthTimeoutMs: 100,
+  });
+  expect(defaultPort.statusCode).not.toBe(403);
+});
+
 test("/connect re-dial tears down the prior WebSocket session", async (_ctx) => {
   // After a DO hibernate, the new incarnation calls POST /connect
   // again to bootstrap a fresh capnweb session against the still-
@@ -438,9 +540,13 @@ test("/connect re-dial tears down the prior WebSocket session", async (_ctx) => 
 
   const port = await getAvailablePort();
   const mountPoint = await fs.mkdtemp(path.join(os.tmpdir(), "computerd-mount-"));
-  await startComputerd({ port, mountPoint, env: { FUSE_MOUNT: "none" } });
-
   const peerUrl = `http://127.0.0.1:${peerPort}`;
+  await startComputerd({
+    port,
+    mountPoint,
+    env: { FUSE_MOUNT: "none", CONNECT_ALLOWED_ORIGINS: peerUrl },
+  });
+
   const connect = async () => {
     const res = await postJson(`http://127.0.0.1:${port}/connect`, {
       base: peerUrl,
@@ -508,7 +614,11 @@ test("/connect presents the shared secret on the dial-back", async (_ctx) => {
   await startComputerd({
     port,
     mountPoint,
-    env: { FUSE_MOUNT: "none", RPC_CLIENT_SECRET: secret },
+    env: {
+      FUSE_MOUNT: "none",
+      RPC_CLIENT_SECRET: secret,
+      CONNECT_ALLOWED_ORIGINS: `http://127.0.0.1:${peerPort}`,
+    },
   });
 
   const res = await postJson(`http://127.0.0.1:${port}/connect`, {
@@ -534,7 +644,11 @@ test("/connect rejects a body that does not name every part", async (_ctx) => {
   // leaves one out has to be refused rather than defaulted.
   const port = await getAvailablePort();
   const mountPoint = await fs.mkdtemp(path.join(os.tmpdir(), "computerd-mount-"));
-  await startComputerd({ port, mountPoint, env: { FUSE_MOUNT: "none" } });
+  await startComputerd({
+    port,
+    mountPoint,
+    env: { FUSE_MOUNT: "none", CONNECT_ALLOWED_ORIGINS: "http://127.0.0.1:1" },
+  });
   const url = `http://127.0.0.1:${port}/connect`;
 
   const cases = [
@@ -576,14 +690,18 @@ async function startComputerd({
   port,
   mountPoint,
   env = {},
+  unsetEnv = [],
 }: {
   port: number;
   mountPoint: string;
   env?: Record<string, string>;
+  unsetEnv?: string[];
 }) {
+  const childEnv = { ...process.env, MOUNT_POINT: mountPoint, PORT: String(port), ...env };
+  for (const name of unsetEnv) delete childEnv[name];
   const child = spawn(cliPath, {
     cwd: packageRoot,
-    env: { ...process.env, MOUNT_POINT: mountPoint, PORT: String(port), ...env },
+    env: childEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
 
