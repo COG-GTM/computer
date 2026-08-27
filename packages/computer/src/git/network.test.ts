@@ -99,10 +99,7 @@ describe("fetchWith forwarding", () => {
       prune: true,
       onAuth: expect.any(Function),
     });
-    const forwarded = calls.fetch[0][0] as {
-      headers: typeof headers;
-      onAuth: unknown;
-    };
+    const forwarded = calls.fetch[0][0] as { headers: typeof headers; onAuth: unknown };
     expect(forwarded.headers).toBe(headers);
     expect(forwarded.onAuth).not.toBe(onAuth);
   });
