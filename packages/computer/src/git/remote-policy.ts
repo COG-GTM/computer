@@ -50,20 +50,13 @@ export function assertRemoteAllowed(
     const noPolicyMessage =
       "network git is disabled: no allowed remote hosts are configured. " +
       "Pass remoteAccess.allowedHosts to createGitClient().";
-    throw new RemoteNotAllowedError(
-      undefined,
-      noPolicyMessage,
-    );
+    throw new RemoteNotAllowedError(undefined, noPolicyMessage);
   }
 
   const protocolAllowed =
-    (url.protocol === "https:" ||
-      (url.protocol === "http:" && policy?.allowInsecureHttp));
+    url.protocol === "https:" || (url.protocol === "http:" && policy?.allowInsecureHttp);
   if (!protocolAllowed) {
-    throw new RemoteNotAllowedError(
-      rawUrl,
-      `scheme '${url.protocol.slice(0, -1)}' is not allowed`,
-    );
+    throw new RemoteNotAllowedError(rawUrl, `scheme '${url.protocol.slice(0, -1)}' is not allowed`);
   }
 
   const hostname = url.hostname.toLowerCase();
