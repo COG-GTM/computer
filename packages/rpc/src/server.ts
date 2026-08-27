@@ -17,11 +17,11 @@ import {
   materialiseChange,
   readFetchCursor,
   readWatermark,
-  stageBlob,
   writeFetchCursor,
 } from "@cloudflare/dofs";
 import { newWebSocketRpcSession, RpcTarget } from "capnweb";
 
+import { BlobIntake } from "./blob-intake.js";
 import { trackStub, untrackStub } from "./debug.js";
 import type { ExecEvent, ShellRPC, SyncRPC, WorkspaceRPC } from "./interface.js";
 
@@ -231,12 +231,13 @@ class SyncRPCServer extends RpcTarget implements SyncRPC {
   async pushObjects(
     objects: ReadableStream<{ hash: Uint8Array; bytes: Uint8Array }>,
   ): Promise<void> {
+    const intake = new BlobIntake();
     const reader = objects.getReader();
     try {
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        stageBlob(this.db, value.hash, value.bytes, Date.now());
+        intake.stage(this.db, value.hash, value.bytes, Date.now());
       }
     } finally {
       reader.releaseLock();
