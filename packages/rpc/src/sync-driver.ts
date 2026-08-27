@@ -430,11 +430,13 @@ async function pullBatchImpl(
         throw new Error(`pullBatch: remote is missing object ${hex(missingRemote[0].hash)}`);
       }
       const missingLocal = chunks.filter((chunk) => !localHave.has(hex(chunk.hash)));
+      // The first transferable chunk is admitted regardless of the
+      // budget so a chunk larger than maxBytes still makes progress.
+      // Rejecting an over-sized declaration up front keeps that escape
+      // hatch bounded at one chunk's worth of bytes.
       for (const chunk of missingLocal) {
         if (chunk.size > MAX_BLOB_BYTES) {
-          throw new Error(
-            `pullBatch: remote object ${hex(chunk.hash)} exceeds maximum size`,
-          );
+          throw new Error(`pullBatch: remote object ${hex(chunk.hash)} exceeds maximum size`);
         }
       }
       const transferable: { hash: Uint8Array; size: number }[] = [];

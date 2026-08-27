@@ -1,3 +1,13 @@
+// Guarded intake for blob bytes that arrive from a sync peer.
+//
+// `stageBlob` trusts its caller to have checked that the bytes hash to
+// the key they land under. Bytes off the wire come from the other end
+// of the sync session, which the receiver does not control, so the
+// receiver checks them here before they reach storage: one intake per
+// object stream, and every object is bounded, solicited, unique and
+// hash-verified before it is staged. A failure throws, which abandons
+// the stream and leaves the cursor where it was.
+
 import { createHash } from "node:crypto";
 
 import { type Database, stageBlob } from "@cloudflare/dofs";
@@ -31,9 +41,7 @@ export class BlobIntake {
   stage(db: Database, hash: Uint8Array, bytes: Uint8Array, now: number): void {
     const hashHex = hex(hash);
     if (bytes.byteLength > MAX_BLOB_BYTES) {
-      throw new Error(
-        `blob ${hashHex} exceeds maximum size of ${MAX_BLOB_BYTES} bytes`,
-      );
+      throw new Error(`blob ${hashHex} exceeds maximum size of ${MAX_BLOB_BYTES} bytes`);
     }
     if (this.#requested !== undefined && !this.#requested.has(hashHex)) {
       throw new Error(`blob ${hashHex} was not requested`);

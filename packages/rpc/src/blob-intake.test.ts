@@ -4,7 +4,7 @@ import { Database, initializeSchema } from "@cloudflare/dofs";
 import { SQLiteTestStorage } from "@cloudflare/dofs/testing";
 import { describe, expect, it } from "vitest";
 
-import { BlobIntake, MAX_BLOB_BYTES, hex } from "./blob-intake.js";
+import { BlobIntake, hex, MAX_BLOB_BYTES } from "./blob-intake.js";
 
 function digest(bytes: Uint8Array): Uint8Array {
   const hash = createHash("sha256");
