@@ -8,7 +8,7 @@ import {
 } from "./remote-policy.js";
 
 const policy: GitRemoteAccessPolicy = {
-  allowedHosts: ["github.com", "git.example.com:8443", "*.example.net", "*.example.com"],
+  allowedHosts: ["github.com", "git.example.com:8443", "*.example.net"],
 };
 
 describe("assertRemoteAllowed", () => {
