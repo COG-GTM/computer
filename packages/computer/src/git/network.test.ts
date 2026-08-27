@@ -99,8 +99,12 @@ describe("fetchWith forwarding", () => {
       prune: true,
       onAuth: expect.any(Function),
     });
-    expect(calls.fetch[0][0].headers).toBe(headers);
-    expect(calls.fetch[0][0].onAuth).not.toBe(onAuth);
+    const forwarded = calls.fetch[0][0] as {
+      headers: typeof headers;
+      onAuth: unknown;
+    };
+    expect(forwarded.headers).toBe(headers);
+    expect(forwarded.onAuth).not.toBe(onAuth);
   });
 
   it("rejects an attacker URL before calling fetch", async () => {
