@@ -574,6 +574,7 @@ describe("runGitCli — clone argv parsing", () => {
       "ssh://git@example.test/r.git",
       "git@example.test:r.git",
       "git://example.test/r.git",
+      "http://",
     ]) {
       const res = await runGitCli(client, { argv: ["clone", url] });
       expect(res.exitCode, url).toBe(1);

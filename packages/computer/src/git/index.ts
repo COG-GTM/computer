@@ -23,9 +23,11 @@
 
 import type { SQLiteWorkspaceProvider } from "@cloudflare/dofs";
 
+import type { WorkspaceEgressPolicy } from "../runtime/egress.js";
 import { type IsomorphicGitFSClient, workspaceIsomorphicGitClient } from "./adapter.js";
 import { type GitCliInput, type GitCliResult, runGitCli } from "./cli.js";
 import { cloneWith, type GitCloneOptions, type IsomorphicGitClient } from "./clone.js";
+import { createEgressHttp } from "./http.js";
 import {
   type CommitResult,
   commitWith,
@@ -330,6 +332,11 @@ export interface WorkspaceGitClientOptions {
 
 export interface CreateGitClientOptions {
   /**
+   * Governs all git network I/O, including clone, fetch, push,
+   * and pull. Defaults fail-closed to `{ mode: "none" }`.
+   */
+  egress?: WorkspaceEgressPolicy;
+  /**
    * Test seam for substituting the @platformatic/vfs adapter.
    * Production callers do not pass this.
    */
@@ -360,6 +367,7 @@ export type GitClientFactory = (options: WorkspaceGitClientOptions) => GitClient
  */
 export function createGitClient({
   adapter = workspaceIsomorphicGitClient,
+  egress = { mode: "none" },
 }: CreateGitClientOptions = {}): GitClientFactory {
   return function createWorkspaceGitClient({
     ws,
@@ -384,7 +392,7 @@ export function createGitClient({
       return gitPromise as Promise<T>;
     };
     const loadHttp = (): Promise<object> => {
-      if (!httpPromise) httpPromise = loadDefaultHTTP();
+      if (!httpPromise) httpPromise = createEgressHttp(egress, loadDefaultHTTP);
       return httpPromise;
     };
     const loadDiffPatch = (): Promise<CreatePatchFn> => {

@@ -2361,7 +2361,14 @@ async function resolveRevisionRef(
 }
 
 function isSupportedRemoteUrl(url: string): boolean {
-  return url.startsWith("https://") || url.startsWith("http://") || url.startsWith("file://");
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === "https:" || parsed.protocol === "http:" || parsed.protocol === "file:"
+    );
+  } catch {
+    return false;
+  }
 }
 
 function errorMessage(cause: unknown): string {
