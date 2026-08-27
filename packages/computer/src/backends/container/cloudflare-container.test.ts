@@ -360,6 +360,7 @@ describe("CloudflareContainerBackend", () => {
     });
     await expect(backend.connect()).rejects.toThrow();
     expect(fake.interceptedHost).toBe("computerd.local");
+    expect(fake.startEnv?.CONNECT_ALLOWED_ORIGINS).toBe("http://computerd.local");
   });
 
   test("containerEnv option merges onto the start() env", async () => {
@@ -367,7 +368,11 @@ describe("CloudflareContainerBackend", () => {
     const backend = new CloudflareContainerBackend({
       container: () => ({ getWorkspaceContainer: () => fake.host }),
       workspace: fakeWorkspace,
-      containerEnv: { CUSTOM: "1", PORT: "9000" },
+      containerEnv: {
+        CUSTOM: "1",
+        PORT: "9000",
+        CONNECT_ALLOWED_ORIGINS: "http://attacker.local",
+      },
       connectTimeoutMs: 300,
     });
     await expect(backend.connect()).rejects.toThrow();
@@ -376,6 +381,8 @@ describe("CloudflareContainerBackend", () => {
     expect(fake.startEnv?.PORT).toBe("9000");
     // Defaults still flow through.
     expect(fake.startEnv?.MOUNT_POINT).toBe("/workspace");
+    // The egress endpoint cannot be widened by containerEnv.
+    expect(fake.startEnv?.CONNECT_ALLOWED_ORIGINS).toBe("http://computer.internal");
   });
 
   test("container factory is invoked per connect()", async () => {
@@ -439,6 +446,7 @@ describe("CloudflareContainerBackend", () => {
       api: "/api",
     });
     expect(typeof fake.connectBody?.healthTimeoutMs).toBe("number");
+    expect(fake.startEnv?.CONNECT_ALLOWED_ORIGINS).toBe("http://computer.internal");
     // The daemon refuses an unauthorized request once it has a secret,
     // so the bearer token travels with the dial-back instruction.
     expect(fake.connectAuthorization).toBe(`Bearer ${fake.clientSecret}`);

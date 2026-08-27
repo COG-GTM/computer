@@ -56,7 +56,11 @@ function fakeCtx(options: { running?: boolean } = {}) {
 }
 
 const spec: ContainerLaunchSpec = {
-  env: { PORT: "8080", MOUNT_POINT: "/workspace" },
+  env: {
+    PORT: "8080",
+    MOUNT_POINT: "/workspace",
+    CONNECT_ALLOWED_ORIGINS: "http://computer.internal",
+  },
   enableInternet: false,
 };
 
@@ -69,6 +73,7 @@ describe("WorkspaceContainerAPI.start", () => {
     expect(info.outcome).toBe("launched");
     expect(starts).toHaveLength(1);
     expect(starts[0]?.enableInternet).toBe(false);
+    expect(starts[0]?.env.CONNECT_ALLOWED_ORIGINS).toBe("http://computer.internal");
     expect(starts[0]?.env.RPC_CLIENT_SECRET).toMatch(/^[0-9a-f]{32}$/);
   });
 

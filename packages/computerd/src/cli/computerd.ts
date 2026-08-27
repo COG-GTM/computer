@@ -37,6 +37,12 @@ const DEFAULT_PORT = BUILD_DEFAULT_PORT ?? 45678;
 const DEFAULT_MOUNT_POINT = "/workspace";
 const HOST = "0.0.0.0";
 
+// The endpoint this daemon dials back into when it has been told
+// nothing else. It is the host the Cloudflare backend serves by
+// default, so an unconfigured container still reaches the one place
+// it was ever meant to reach.
+const DEFAULT_CONNECT_ORIGIN = "http://computer.internal";
+
 // The previous boot path used three separate env vars to pick a
 // FUSE backend (DISABLE_FUSE, FUSE_SHIM, WSD_FUSE_BACKEND). They
 // were collapsed into a single FUSE_MOUNT knob. We're pre-1.0 alpha
@@ -71,6 +77,50 @@ function parsePort(value: string | undefined): number {
   }
 
   return port;
+}
+
+// Canonical form of a dial-back endpoint: scheme, host, port, and any
+// path prefix, with the trailing slash and the default port removed so
+// that a launch-time entry and a request body that name the same place
+// compare equal. Credentials, a query, or a fragment mean the caller is
+// naming something other than an endpoint, so they have no canonical
+// form here.
+function canonicalDialBase(value: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+  if (url.username !== "" || url.password !== "") return undefined;
+  if (url.search !== "" || url.hash !== "") return undefined;
+  return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, "")}`;
+}
+
+// CONNECT_ALLOWED_ORIGINS names, at launch, every endpoint /connect may
+// dial. The request body cannot widen it: the body arrives from whoever
+// can reach this port, which includes every command the workspace runs,
+// and a dial serves that peer the whole workspace — files and shell.
+// Unset means the default origin alone, so the surface is closed even
+// when the operator sets nothing.
+function parseConnectOrigins(value: string | undefined): Set<string> {
+  const raw = value === undefined || value.trim() === "" ? DEFAULT_CONNECT_ORIGIN : value;
+  const origins = new Set<string>();
+  for (const entry of raw.split(/[\s,]+/)) {
+    if (entry === "") continue;
+    const canonical = canonicalDialBase(entry);
+    if (canonical === undefined) {
+      throw new Error(
+        `CONNECT_ALLOWED_ORIGINS entries must be http:// or https:// origins, got ${JSON.stringify(entry)}`,
+      );
+    }
+    origins.add(canonical);
+  }
+  if (origins.size === 0) {
+    throw new Error("CONNECT_ALLOWED_ORIGINS must name at least one origin");
+  }
+  return origins;
 }
 
 function parseMountPoint(value: string | undefined): string {
@@ -192,6 +242,7 @@ function createHTTPServer(
   info: ComputerdInfo,
   rpc: ReturnType<typeof createWorkspaceServer>,
   secret: string | undefined,
+  allowedConnectOrigins: ReadonlySet<string>,
   getStats?: () => Record<string, unknown>,
 ): HTTPHandle {
   // Holds the current outbound capnweb session opened via /connect.
@@ -237,7 +288,7 @@ function createHTTPServer(
         });
         return;
       }
-      void handleConnect(request, response, rpc, upstreamSlot, secret);
+      void handleConnect(request, response, rpc, upstreamSlot, secret, allowedConnectOrigins);
       return;
     }
 
@@ -446,6 +497,7 @@ async function handleConnect(
   rpc: ReturnType<typeof createWorkspaceServer>,
   upstreamSlot: { ws: WebSocket | undefined },
   secret: string | undefined,
+  allowedConnectOrigins: ReadonlySet<string>,
 ): Promise<void> {
   let body: ConnectBody;
   try {
@@ -478,7 +530,18 @@ async function handleConnect(
     });
     return;
   }
-  const baseUrl = body.base.replace(/\/+$/, "");
+  // The body names where to dial; the launch configuration decides
+  // whether we are willing to go there. Anything else, and a caller on
+  // this port picks the endpoint: the probe below becomes a reachability
+  // oracle for whatever the container can route to, and the session
+  // opened after it hands the peer the workspace.
+  const baseUrl = canonicalDialBase(body.base);
+  if (baseUrl === undefined || !allowedConnectOrigins.has(baseUrl)) {
+    send(response, 403, "'base' is not an allowed dial-back endpoint\n", {
+      "content-type": "text/plain; charset=utf-8",
+    });
+    return;
+  }
   const healthUrl = `${baseUrl}${body.health}`;
   const healthTimeoutMs =
     typeof body.healthTimeoutMs === "number" && body.healthTimeoutMs > 0
@@ -586,6 +649,7 @@ async function main(): Promise<void> {
 
   const port = parsePort(process.env.PORT);
   const mountPoint = parseMountPoint(process.env.MOUNT_POINT);
+  const allowedConnectOrigins = parseConnectOrigins(process.env.CONNECT_ALLOWED_ORIGINS);
   // FUSE_MOUNT picks the backend. auto (default) probes /dev/fuse
   // or macFUSE and falls back to the userspace shim. fuse / macfuse
   // require their respective real backend. shim forces the userspace
@@ -677,7 +741,7 @@ async function main(): Promise<void> {
         }
       : {}),
   });
-  const http = createHTTPServer(info, rpc, clientSecret, () => ({
+  const http = createHTTPServer(info, rpc, clientSecret, allowedConnectOrigins, () => ({
     ...collectDbStats(db),
     ...(fuse?.getBufferStats?.() ?? {}),
   }));

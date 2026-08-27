@@ -114,10 +114,22 @@ Additional environment variables:
 ```sh
 EXEC_LOG_MAX_BYTES=1048576        # cap the in-memory exec log buffer (bytes)
 RPC_CLIENT_SECRET=<secret>        # require Authorization: Bearer <secret> on every route but /health
+CONNECT_ALLOWED_ORIGINS=http://computer.internal,https://host.example  # endpoints /connect may dial back into
 COMPUTER_VAR_NODE_ENV=production  # forwarded into exec as NODE_ENV
 ```
 
 `FUSE_MOUNT=auto` is the friendly default: if `/dev/fuse` (or macFUSE) is available `computerd` mounts a real FUSE filesystem, otherwise it transparently falls back to the userspace shim. Pin the value (`fuse` / `macfuse` / `shim` / `none`) when a test needs to assert a specific code path.
+
+`CONNECT_ALLOWED_ORIGINS` is a comma- or whitespace-separated list of
+`http://` or `https://` endpoints, each optionally carrying a path
+prefix. `POST /connect` refuses a `base` that is not one of them with
+`403`, before it probes anything. Unset, the list holds
+`http://computer.internal` alone: the endpoint the Cloudflare backend
+serves by default. The request body cannot widen the list. A dial hands
+the peer a full workspace session — file reads and writes and command
+execution — and every command the workspace runs can reach this port,
+so the endpoint is a launch-time decision rather than a request-time
+one.
 
 ## `FUSE_MOUNT=shim` — userspace dev shim
 
