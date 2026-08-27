@@ -395,6 +395,26 @@ describe("ShellWorker", () => {
       expect(stderr?.value).toContain("'nope' is not a supported workspace git command");
       expect(exit?.value).toBe(1);
     });
+
+    it("blocks network git commands and reports the error on stderr", async () => {
+      const worker = new ShellWorker(undefined as never, envFor(stub) as never);
+      const events = (await drain(
+        (
+          await worker.exec({
+            command: "git clone http://example.test/repo.git",
+            cwd: "/workspace",
+          })
+        ).events,
+      )) as { name: string; value: string | number }[];
+      const stdout = events.find((e) => e.name === "stdout");
+      const stderr = events.find((e) => e.name === "stderr");
+      const exit = events.find((e) => e.name === "exit");
+      expect(stdout?.value).toBe("");
+      expect(stderr?.value).toContain(
+        'git network access is disabled by the workspace egress policy (mode "none")',
+      );
+      expect(exit?.value).toBe(1);
+    });
   });
 
   describe("`assets` custom command wiring", () => {

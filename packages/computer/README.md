@@ -316,7 +316,7 @@ import { createGitClient } from "@cloudflare/computer/git";
 
 const ws = new Workspace({
   storage: ctx.storage,
-  git: createGitClient(),
+  git: createGitClient({ egress: { mode: "direct" } }),
   defaultGitIdentity: { name: "Agent", email: "agent@example.test" },
 });
 
@@ -325,6 +325,11 @@ await ws.fs.writeFile("/notes.md", "hello");
 await ws.git.add({ paths: ["notes.md"] });
 await ws.git.commit({ message: "add notes" });
 ```
+
+Git network access is fail-closed by default. Pass
+`egress: { mode: "direct" }` for direct access or
+`egress: { mode: "http-gateway", gateway }` to route clone, fetch,
+push, and pull through a gateway.
 
 The git subpath bundles `isomorphic-git` lazily and swaps its `pako`
 dependency for the Workers `node:zlib` implementation, so the default

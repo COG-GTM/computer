@@ -8,10 +8,16 @@
 
 `workspace.git` is a major typed surface on `Workspace`, alongside `fs`, `runtime`, Assets, and Artifacts. It is opt-in: pass `createGitClient()` from `@cloudflare/computer/git` as `WorkspaceOptions.git` to enable it. Git runs every operation against the local SQLite-backed VFS through `isomorphic-git`, so a
 filesystem-only workspace (no backend) can drive a full
-clone/commit/diff cycle. The git subpath bundles `isomorphic-git`
+clone/commit/diff cycle when network egress is configured. The git
+subpath bundles `isomorphic-git`
 lazily and replaces its `pako` dependency with a small
 `node:zlib` shim for Workers running with `nodejs_compat`; the
 default `@cloudflare/computer` graph stays free of git.
+
+Git network access is fail-closed by default. Configure
+`createGitClient({ egress: { mode: "direct" } })` for direct access,
+or use `{ mode: "http-gateway", gateway }` to route clone, fetch,
+push, and pull through a gateway.
 
 Two doors into the same implementation:
 
@@ -115,7 +121,10 @@ diff against HEAD — through each entry point.
 import { Workspace } from "@cloudflare/computer";
 import { createGitClient } from "@cloudflare/computer/git";
 
-const ws = new Workspace({ storage: ctx.storage, git: createGitClient() });
+const ws = new Workspace({
+  storage: ctx.storage,
+  git: createGitClient({ egress: { mode: "direct" } }),
+});
 await ws.git.clone({ url: "https://github.com/example/repo.git" });
 await ws.fs.writeFile("/README.md", "hello world\n");
 const patch = await ws.git.diff();
@@ -1080,13 +1089,11 @@ class MyShell extends ShellWorker {
 
 Two properties of the shell-side path worth pinning:
 
-- **Network commands work despite `globalOutbound: null`.**
-  The Dynamic Worker hosting the shell has its globalOutbound
-  set to `null`, blocking all outbound HTTP. `git clone`,
-  `git fetch`, `git pull`, and `git push` still work because
-  the actual HTTP request happens on the host durable object
-  side, not in the shell isolate. The shell just hands the
-  argv across the loopback and waits for the result.
+- **Git egress is governed by the host git client.** The Dynamic
+  Worker hosting the shell may have `globalOutbound` set to `null`,
+  but host-bridged `git clone`, `git fetch`, `git pull`, and
+  `git push` use the git client's own egress policy. The default is
+  fail-closed; configure direct or gateway access explicitly.
 - **Progress is buffered.** A long `clone` produces no output
   until the call returns. Progress callbacks fire on the host
   side; their output is collected into stderr and flushed at

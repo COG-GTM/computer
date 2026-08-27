@@ -6,8 +6,10 @@
 // diff.test.ts; what's worth pinning here is the binding contract.
 
 import type { SQLiteWorkspaceProvider } from "@cloudflare/dofs";
+import { SQLiteTestStorage } from "@cloudflare/dofs/testing";
 import { describe, expect, it, vi } from "vitest";
 
+import { Workspace } from "../workspace.js";
 import type { IsomorphicGitFSClient } from "./adapter.js";
 import { createGitClient } from "./index.js";
 
@@ -25,6 +27,25 @@ function stubFs(): IsomorphicGitFSClient {
 }
 
 describe("createGitClient", () => {
+  it("blocks network access by default", async () => {
+    const ws = new Workspace({
+      storage: new SQLiteTestStorage(),
+      git: createGitClient(),
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await ws.ready();
+
+    try {
+      await expect(ws.git.clone({ url: "https://example.test/repo.git" })).rejects.toMatchObject({
+        code: "EEGRESSBLOCKED",
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+      await ws.close();
+    }
+  });
+
   it("calls ws.provider() lazily on first use, then caches the FsClient", async () => {
     const provider = vi.fn(() => opaqueProvider);
     const fs = stubFs();

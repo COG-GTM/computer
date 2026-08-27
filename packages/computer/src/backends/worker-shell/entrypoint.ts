@@ -46,18 +46,19 @@ export interface ShellWorkerOptions {
   // at build time). Defaults to defaultSecureFetch below, a thin
   // wrapper over the isolate's global `fetch`, so curl is enabled
   // by default. Egress is governed by the Dynamic Worker's
-  // globalOutbound, not by this fetch (see worker.ts). Pass a
-  // custom SecureFetch to add an allow-list or credential
+  // globalOutbound for curl. Host-bridged git traffic is governed
+  // separately by the git client's own policy through
+  // createGitClient({ egress }), which defaults to "none". Pass
+  // a custom SecureFetch to add an allow-list or credential
   // injection, or `null` to drop curl entirely.
   fetch?: SecureFetch | null;
 }
 
 // Default curl fetch: adapt the isolate's global `fetch` to
 // just-bash's SecureFetch contract. No allow-list or private-range
-// checks run here — the Dynamic Worker's globalOutbound is the
-// egress boundary, so requests only leave the isolate once a
-// consumer wires a trusted outbound gateway; policy belongs in
-// that gateway, not the untrusted shell.
+// checks run here — the Dynamic Worker's globalOutbound handles
+// curl egress, while host-bridged git traffic uses the git
+// client's own egress policy.
 const defaultSecureFetch: SecureFetch = async (url, options) => {
   const response = await fetch(url, {
     method: options?.method,
