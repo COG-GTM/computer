@@ -19,7 +19,8 @@ Computer daemon CLI and FUSE mount package.
 The HTTP server listens on the port provided by the `PORT` environment variable, defaulting to `45678`. The FUSE mount point is provided by `MOUNT_POINT`, defaulting to `/workspace`. The backing VFS stores files under the same absolute prefix: VFS `/workspace/repo/a.txt` is visible to container processes as `/workspace/repo/a.txt`, so capnweb reads, shim materialisation, and shell `exec` agree on absolute paths.
 
 ```sh
-PORT=45678 MOUNT_POINT=/tmp/workspace npx -p @cloudflare/computerd computerd
+RPC_ALLOW_ANONYMOUS=1 PORT=45678 MOUNT_POINT=/tmp/workspace \
+  npx -p @cloudflare/computerd computerd
 ```
 
 Current endpoints:
@@ -35,8 +36,12 @@ All other paths and methods return `404`/`405` with a `text/plain` body.
 
 When `RPC_CLIENT_SECRET` is set, every route above except `/health` requires
 it as `Authorization: Bearer <secret>`, and so does the `/api` upgrade.
-Requests without it get `401`. Leaving the variable unset disables the
-check, which is what the container harnesses rely on.
+Requests without it get `401`. When the variable is unset, every route
+except `/health` returns `401` unless `RPC_ALLOW_ANONYMOUS` explicitly
+opts into unauthenticated access. Values `1`, `true`, and `loopback`
+open the routes on `127.0.0.1`; `all-interfaces` opens them on
+`0.0.0.0` and should only be used on a trusted network. If both
+variables are set, `RPC_CLIENT_SECRET` takes precedence.
 
 Current filesystem support:
 
@@ -114,6 +119,8 @@ Additional environment variables:
 ```sh
 EXEC_LOG_MAX_BYTES=1048576        # cap the in-memory exec log buffer (bytes)
 RPC_CLIENT_SECRET=<secret>        # require Authorization: Bearer <secret> on every route but /health
+RPC_ALLOW_ANONYMOUS=1              # opt into unauthenticated access on 127.0.0.1
+RPC_ALLOW_ANONYMOUS=all-interfaces # opt into unauthenticated access on 0.0.0.0
 COMPUTER_VAR_NODE_ENV=production  # forwarded into exec as NODE_ENV
 ```
 

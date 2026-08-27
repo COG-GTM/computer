@@ -40,6 +40,7 @@ docker run --rm -d \
   --platform linux/amd64 \
   -e PORT="${port}" \
   -e FUSE_MOUNT=none \
+  -e RPC_ALLOW_ANONYMOUS=all-interfaces \
   -e EXEC_LOG_MAX_BYTES=256 \
   -p "${port}:${port}" \
   -v "${binary}:/usr/local/bin/computerd:ro" \

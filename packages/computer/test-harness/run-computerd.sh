@@ -62,6 +62,7 @@ CID=$(docker run --rm -d \
   -p "$HOST_PORT:8080" \
   -e PORT=8080 \
   -e MOUNT_POINT=/workspace \
+  -e RPC_ALLOW_ANONYMOUS=all-interfaces \
   "$IMAGE_TAG" \
   /usr/local/bin/computerd)
 

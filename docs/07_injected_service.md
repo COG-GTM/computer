@@ -49,7 +49,7 @@ backend pins it to `8080`) and serves:
 
 | Route | Method | Purpose |
 | --- | --- | --- |
-| `/health` | `GET`, `HEAD` | Liveness probe; `200 ok\n` as soon as the HTTP server binds. The only route reachable without the shared secret. |
+| `/health` | `GET`, `HEAD` | Liveness probe; `200 ok\n` as soon as the HTTP server binds. The only route reachable without the shared secret or anonymous opt-in. |
 | `/__computerd/info` | `GET` | Runtime info: FUSE backend, mount point, port. |
 | `/api` | `GET` (upgrade) | WebSocket capnweb transport — the bootstrap stub is `WorkspaceRPC`. Only the exact path upgrades. A request without an `Upgrade` header gets `400`; an unsupported `Sec-WebSocket-Version` gets `426` and the versions the server speaks. |
 | `/api/watermarks` | `GET`, `HEAD` | Sync revisions: `currentRev`, `pushRev`, `fetchCursor`. The same values `sync.watermarks()` returns, for callers that want a few numbers without holding a session. |
@@ -170,7 +170,8 @@ These are the variables `computerd` actually consumes (see
 | `MOUNT_POINT` | `/workspace` | Absolute path inside the container to mount the FUSE filesystem at. Ignored when `FUSE_MOUNT=none`. |
 | `FUSE_MOUNT` | `auto` | Backend selector: `auto` probes `/dev/fuse` (linux) or macFUSE (darwin) and falls back to the userspace shim; `fuse` / `macfuse` require the corresponding real backend; `shim` forces the userspace shim; `none` skips the mount entirely. |
 | `EXEC_LOG_MAX_BYTES` | runner default | Caps the per-exec stdout/stderr log retained in-memory. |
-| `RPC_CLIENT_SECRET` | unset | When set, every route except `/health` requires it as `Authorization: Bearer <secret>`, including the `/api` upgrade. Unset leaves the surface open. The Cloudflare backend generates one per workspace and sets it at launch. |
+| `RPC_CLIENT_SECRET` | unset | When set, every route except `/health` requires it as `Authorization: Bearer <secret>`, including the `/api` upgrade. When unset, every route except `/health` returns `401` unless `RPC_ALLOW_ANONYMOUS` is set. The Cloudflare backend generates one per workspace and sets it at launch. |
+| `RPC_ALLOW_ANONYMOUS` | unset | Explicitly opts into unauthenticated access when `RPC_CLIENT_SECRET` is unset. `1`, `true`, and `loopback` bind to `127.0.0.1`; `all-interfaces` binds to `0.0.0.0` and opens the whole RPC surface. Any other value rejects startup. |
 | `COMPUTER_VAR_*` | unset | Forwarded into every `shell.exec` command with the prefix stripped, so `COMPUTER_VAR_NODE_ENV` arrives as `NODE_ENV`. |
 | `LOG_FILE` | unset | If set, every `console.log` / `console.error` line and any `uncaughtException` / `unhandledRejection` is also appended to this file. Stdout/stderr behaviour is unchanged. |
 

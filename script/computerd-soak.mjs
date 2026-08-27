@@ -128,6 +128,8 @@ async function bootContainer() {
     "PORT=8080",
     "-e",
     `MOUNT_POINT=${MOUNT_POINT}`,
+    "-e",
+    "RPC_ALLOW_ANONYMOUS=all-interfaces",
   );
   if (DISABLE_FUSE) {
     args.push("-e", "FUSE_MOUNT=none");

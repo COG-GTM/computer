@@ -40,6 +40,7 @@ test("computerd rejects non-numeric EXEC_LOG_MAX_BYTES values", async () => {
       PORT: String(port),
       EXEC_LOG_MAX_BYTES: "foo",
       FUSE_MOUNT: "none",
+      RPC_CLIENT_SECRET: "",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -508,7 +509,7 @@ test("/connect presents the shared secret on the dial-back", async (_ctx) => {
   await startComputerd({
     port,
     mountPoint,
-    env: { FUSE_MOUNT: "none", RPC_CLIENT_SECRET: secret },
+    env: { FUSE_MOUNT: "none", RPC_CLIENT_SECRET: secret, RPC_ALLOW_ANONYMOUS: "" },
   });
 
   const res = await postJson(`http://127.0.0.1:${port}/connect`, {
@@ -583,7 +584,14 @@ async function startComputerd({
 }) {
   const child = spawn(cliPath, {
     cwd: packageRoot,
-    env: { ...process.env, MOUNT_POINT: mountPoint, PORT: String(port), ...env },
+    env: {
+      ...process.env,
+      MOUNT_POINT: mountPoint,
+      PORT: String(port),
+      RPC_CLIENT_SECRET: "",
+      RPC_ALLOW_ANONYMOUS: "1",
+      ...env,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -604,7 +612,7 @@ async function startComputerd({
   });
 
   await waitForHTTPOK(`http://127.0.0.1:${port}/health`, child, () => stderr || stdout);
-  return child;
+  return Object.assign(child, { getOutput: () => ({ stderr, stdout }) });
 }
 
 function getAvailablePort() {
@@ -788,7 +796,7 @@ test("RPC_CLIENT_SECRET gates the HTTP surface but not /health", async (_ctx) =>
   await startComputerd({
     port,
     mountPoint,
-    env: { FUSE_MOUNT: "none", RPC_CLIENT_SECRET: secret },
+    env: { FUSE_MOUNT: "none", RPC_CLIENT_SECRET: secret, RPC_ALLOW_ANONYMOUS: "" },
   });
   const base = `http://127.0.0.1:${port}`;
   const bearer = { authorization: `Bearer ${secret}` };
@@ -852,13 +860,107 @@ test("RPC_CLIENT_SECRET gates the HTTP surface but not /health", async (_ctx) =>
   expect(upgrade).toMatch(/^HTTP\/1\.1 401 /);
 });
 
-test("without RPC_CLIENT_SECRET every route stays open", async (_ctx) => {
+test("without RPC_CLIENT_SECRET every route except health fails closed", async (_ctx) => {
   const port = await getAvailablePort();
   const mountPoint = await fs.mkdtemp(path.join(os.tmpdir(), "computerd-noauth-"));
-  await startComputerd({ port, mountPoint, env: { FUSE_MOUNT: "none" } });
+  await startComputerd({
+    port,
+    mountPoint,
+    env: { FUSE_MOUNT: "none", RPC_CLIENT_SECRET: "", RPC_ALLOW_ANONYMOUS: "" },
+  });
   const base = `http://127.0.0.1:${port}`;
 
+  expect((await request(`${base}/health`)).statusCode).toBe(200);
+  for (const route of ["/", "/__computerd/info", "/api/watermarks"]) {
+    const response = await request(`${base}${route}`);
+    expect(response.statusCode, route).toBe(401);
+    expect(response.headers["www-authenticate"]).toBe("Bearer");
+  }
+
+  const connect = await postJson(`${base}/connect`, {});
+  expect(connect.statusCode).toBe(401);
+  expect(connect.headers["www-authenticate"]).toBe("Bearer");
+  const upgrade = await rawRequest(port, [
+    "GET /api HTTP/1.1",
+    `Host: 127.0.0.1:${port}`,
+    "Upgrade: websocket",
+    "Connection: Upgrade",
+    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+    "Sec-WebSocket-Version: 13",
+  ]);
+  expect(upgrade).toMatch(/^HTTP\/1\.1 401 /);
+});
+
+test("RPC_ALLOW_ANONYMOUS=1 opens routes and binds loopback", async (_ctx) => {
+  const port = await getAvailablePort();
+  const mountPoint = await fs.mkdtemp(path.join(os.tmpdir(), "computerd-anonymous-"));
+  const child = await startComputerd({
+    port,
+    mountPoint,
+    env: { FUSE_MOUNT: "none", RPC_CLIENT_SECRET: "", RPC_ALLOW_ANONYMOUS: "1" },
+  });
+  const base = `http://127.0.0.1:${port}`;
+
+  expect(child.getOutput().stdout).toContain(`computerd listening on 127.0.0.1:${port}`);
   for (const route of ["/health", "/", "/__computerd/info", "/api/watermarks"]) {
     expect((await request(`${base}${route}`)).statusCode, route).toBe(200);
   }
+  expect((await postJson(`${base}/connect`, {})).statusCode).toBe(400);
+
+  const upgrade = await rawRequest(port, [
+    "GET /api HTTP/1.1",
+    `Host: 127.0.0.1:${port}`,
+    "Upgrade: websocket",
+    "Connection: Upgrade",
+    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+    "Sec-WebSocket-Version: 13",
+  ]);
+  expect(upgrade).toMatch(/^HTTP\/1\.1 101 /);
+});
+
+test("RPC_ALLOW_ANONYMOUS=all-interfaces opens routes and binds all interfaces", async (_ctx) => {
+  const port = await getAvailablePort();
+  const mountPoint = await fs.mkdtemp(path.join(os.tmpdir(), "computerd-anonymous-"));
+  const child = await startComputerd({
+    port,
+    mountPoint,
+    env: { FUSE_MOUNT: "none", RPC_CLIENT_SECRET: "", RPC_ALLOW_ANONYMOUS: "all-interfaces" },
+  });
+  const base = `http://127.0.0.1:${port}`;
+
+  expect(child.getOutput().stdout).toContain(`computerd listening on 0.0.0.0:${port}`);
+  for (const route of ["/health", "/", "/__computerd/info", "/api/watermarks"]) {
+    expect((await request(`${base}${route}`)).statusCode, route).toBe(200);
+  }
+  expect((await postJson(`${base}/connect`, {})).statusCode).toBe(400);
+
+  const upgrade = await rawRequest(port, [
+    "GET /api HTTP/1.1",
+    `Host: 127.0.0.1:${port}`,
+    "Upgrade: websocket",
+    "Connection: Upgrade",
+    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+    "Sec-WebSocket-Version: 13",
+  ]);
+  expect(upgrade).toMatch(/^HTTP\/1\.1 101 /);
+});
+
+test("computerd rejects invalid RPC_ALLOW_ANONYMOUS values", async (_ctx) => {
+  const port = await getAvailablePort();
+  const child = spawn(cliPath, {
+    cwd: packageRoot,
+    env: {
+      ...process.env,
+      MOUNT_POINT: "/tmp/computerd-mount-not-used",
+      PORT: String(port),
+      FUSE_MOUNT: "none",
+      RPC_CLIENT_SECRET: "",
+      RPC_ALLOW_ANONYMOUS: "sometimes",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+
+  const { code, stderr } = await waitForExit(child);
+  expect(code).toBe(1);
+  expect(stderr).toMatch(/RPC_ALLOW_ANONYMOUS must be one of/);
 });

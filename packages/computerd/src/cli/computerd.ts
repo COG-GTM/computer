@@ -35,7 +35,8 @@ const BUILD_DEFAULT_PORT: number | undefined =
     : undefined;
 const DEFAULT_PORT = BUILD_DEFAULT_PORT ?? 45678;
 const DEFAULT_MOUNT_POINT = "/workspace";
-const HOST = "0.0.0.0";
+const DEFAULT_HOST = "0.0.0.0";
+const LOOPBACK_HOST = "127.0.0.1";
 
 // The previous boot path used three separate env vars to pick a
 // FUSE backend (DISABLE_FUSE, FUSE_SHIM, WSD_FUSE_BACKEND). They
@@ -82,6 +83,48 @@ function parseMountPoint(value: string | undefined): string {
   return mountPoint;
 }
 
+interface AuthConfig {
+  secret: string | undefined;
+  allowAnonymous: boolean;
+}
+
+function resolveAuthConfig(env: NodeJS.ProcessEnv): { auth: AuthConfig; host: string } {
+  const secret = env.RPC_CLIENT_SECRET?.trim() || undefined;
+  const anonymous = env.RPC_ALLOW_ANONYMOUS;
+
+  if (secret !== undefined) {
+    if (anonymous !== undefined) {
+      console.warn("[warn] RPC_CLIENT_SECRET is set; RPC_ALLOW_ANONYMOUS is ignored");
+    }
+    return { auth: { secret, allowAnonymous: false }, host: DEFAULT_HOST };
+  }
+
+  if (anonymous === undefined || anonymous === "") {
+    console.warn(
+      "[warn] RPC_CLIENT_SECRET is unset and RPC_ALLOW_ANONYMOUS is not enabled; all routes except /health require authorization",
+    );
+    return { auth: { secret, allowAnonymous: false }, host: DEFAULT_HOST };
+  }
+
+  if (anonymous === "1" || anonymous === "true" || anonymous === "loopback") {
+    console.warn(
+      `[warn] RPC_CLIENT_SECRET is unset; RPC_ALLOW_ANONYMOUS=${anonymous} opens the RPC surface on ${LOOPBACK_HOST}`,
+    );
+    return { auth: { secret, allowAnonymous: true }, host: LOOPBACK_HOST };
+  }
+
+  if (anonymous === "all-interfaces") {
+    console.warn(
+      "[warn] RPC_CLIENT_SECRET is unset; RPC_ALLOW_ANONYMOUS=all-interfaces opens the whole RPC surface, including arbitrary shell exec, on every interface",
+    );
+    return { auth: { secret, allowAnonymous: true }, host: DEFAULT_HOST };
+  }
+
+  throw new Error(
+    `RPC_ALLOW_ANONYMOUS must be one of "1", "true", "loopback", or "all-interfaces"; got ${JSON.stringify(anonymous)}`,
+  );
+}
+
 function send(
   response: ServerResponse,
   statusCode: number,
@@ -100,17 +143,17 @@ function requestPath(request: IncomingMessage): string {
   return url.pathname;
 }
 
-// Routes reachable without the shared secret. Readiness has to stay
-// open: the host polls it before it holds any session, and a gated
-// probe turns a bad token into what looks like a container that never
-// started.
+// The readiness route is reachable without the shared secret. It has
+// to stay open: the host polls it before it holds any session, and a
+// gated probe turns a bad token into what looks like a container that
+// never started.
 const UNAUTHENTICATED_PATHS = new Set(["/health"]);
 
 // When RPC_CLIENT_SECRET is set, every other route requires it as a
-// bearer token. When it is unset there is nothing to check and the
-// surface is open, which is how the harnesses and local runs work.
-function isAuthorized(request: IncomingMessage, secret: string | undefined): boolean {
-  if (secret === undefined) return true;
+// bearer token. When it is unset, only an explicit anonymous opt-in
+// opens the surface; otherwise every route except /health is refused.
+function isAuthorized(request: IncomingMessage, auth: AuthConfig): boolean {
+  if (auth.secret === undefined) return auth.allowAnonymous;
   const header = request.headers.authorization;
   if (typeof header !== "string") return false;
   // The scheme token is case-insensitive and may be followed by more
@@ -121,7 +164,7 @@ function isAuthorized(request: IncomingMessage, secret: string | undefined): boo
   if (separator === -1) return false;
   if (header.slice(0, separator).toLowerCase() !== "bearer") return false;
   const presented = Buffer.from(header.slice(separator + 1).trim());
-  const expected = Buffer.from(secret);
+  const expected = Buffer.from(auth.secret);
   // timingSafeEqual throws on a length mismatch, and the length of the
   // secret is not worth leaking through the comparison either.
   if (presented.length !== expected.length) return false;
@@ -191,7 +234,7 @@ interface HTTPHandle {
 function createHTTPServer(
   info: ComputerdInfo,
   rpc: ReturnType<typeof createWorkspaceServer>,
-  secret: string | undefined,
+  auth: AuthConfig,
   getStats?: () => Record<string, unknown>,
 ): HTTPHandle {
   // Holds the current outbound capnweb session opened via /connect.
@@ -204,7 +247,7 @@ function createHTTPServer(
 
     // Checked before routing so an unauthorized caller cannot learn
     // which routes exist.
-    if (!UNAUTHENTICATED_PATHS.has(path) && !isAuthorized(request, secret)) {
+    if (!UNAUTHENTICATED_PATHS.has(path) && !isAuthorized(request, auth)) {
       send(response, 401, "unauthorized\n", {
         "www-authenticate": "Bearer",
         "content-type": "text/plain; charset=utf-8",
@@ -237,7 +280,7 @@ function createHTTPServer(
         });
         return;
       }
-      void handleConnect(request, response, rpc, upstreamSlot, secret);
+      void handleConnect(request, response, rpc, upstreamSlot, auth);
       return;
     }
 
@@ -347,7 +390,7 @@ function createHTTPServer(
     acceptWebSocketSession(ws, rpc);
   });
   server.on("upgrade", (request, socket, head) => {
-    if (!isAuthorized(request, secret)) {
+    if (!isAuthorized(request, auth)) {
       socket.write(
         "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nConnection: close\r\n\r\n",
       );
@@ -445,7 +488,7 @@ async function handleConnect(
   response: ServerResponse,
   rpc: ReturnType<typeof createWorkspaceServer>,
   upstreamSlot: { ws: WebSocket | undefined },
-  secret: string | undefined,
+  auth: AuthConfig,
 ): Promise<void> {
   let body: ConnectBody;
   try {
@@ -515,7 +558,7 @@ async function handleConnect(
   // includes every command this daemon runs — could take the workspace's
   // place. The host holds the same secret, having set it at launch.
   const ws = new WebSocket(wsUrl, {
-    ...(secret !== undefined ? { headers: { authorization: `Bearer ${secret}` } } : {}),
+    ...(auth.secret !== undefined ? { headers: { authorization: `Bearer ${auth.secret}` } } : {}),
   });
   upstreamSlot.ws = ws;
   ws.once("open", () => {
@@ -577,11 +620,11 @@ async function main(): Promise<void> {
 
   rejectLegacyFuseEnv(process.env);
 
-  // Read the shared secret once and drop it from the environment. The
-  // exec allowlist already keeps it out of spawned commands; removing
-  // it here means a future code path that spreads process.env cannot
-  // reintroduce the leak.
-  const clientSecret = process.env.RPC_CLIENT_SECRET?.trim() || undefined;
+  // Resolve the auth posture once and drop the shared secret from the
+  // environment. The exec allowlist already keeps it out of spawned
+  // commands; removing it here means a future code path that spreads
+  // process.env cannot reintroduce the leak.
+  const { auth, host } = resolveAuthConfig(process.env);
   delete process.env.RPC_CLIENT_SECRET;
 
   const port = parsePort(process.env.PORT);
@@ -677,7 +720,7 @@ async function main(): Promise<void> {
         }
       : {}),
   });
-  const http = createHTTPServer(info, rpc, clientSecret, () => ({
+  const http = createHTTPServer(info, rpc, auth, () => ({
     ...collectDbStats(db),
     ...(fuse?.getBufferStats?.() ?? {}),
   }));
@@ -709,14 +752,14 @@ async function main(): Promise<void> {
   process.once("SIGTERM", (signal) => void shutdown(signal));
 
   await new Promise<void>((resolve) => {
-    http.server.listen(port, HOST, () => {
+    http.server.listen(port, host, () => {
       const address = http.server.address();
 
       const boundPort = typeof address === "object" && address !== null ? address.port : port;
       info.port = boundPort;
       const mountLabel = backend.kind === "none" ? "(disabled)" : mountPoint;
       console.log(
-        `computerd listening on ${HOST}:${boundPort} mount=${mountLabel} backend=${backend.kind}`,
+        `computerd listening on ${host}:${boundPort} mount=${mountLabel} backend=${backend.kind}`,
       );
       resolve();
     });

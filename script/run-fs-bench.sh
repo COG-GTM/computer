@@ -25,6 +25,7 @@ mkdir -p /tmp/workspace /tmp/baseline
 # the container.
 COMPUTERD_FUSE_TRACE="${COMPUTERD_FUSE_TRACE:-}" \
   COMPUTERD_FUSE_TRACE_FILE="${COMPUTERD_FUSE_TRACE_FILE:-}" \
+  RPC_ALLOW_ANONYMOUS=1 \
   PORT=45678 MOUNT_POINT=/tmp/workspace /usr/local/bin/computerd >/tmp/computerd.log 2>&1 &
 COMPUTERD_PID=$!
 

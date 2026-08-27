@@ -70,6 +70,8 @@ async function bootContainer() {
     "PORT=8080",
     "-e",
     "MOUNT_POINT=/workspace",
+    "-e",
+    "RPC_ALLOW_ANONYMOUS=all-interfaces",
     "debian:stable-slim",
     "bash",
     "-c",

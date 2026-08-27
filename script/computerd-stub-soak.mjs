@@ -196,6 +196,7 @@ async function main() {
     MOUNT_POINT: mountPoint,
     PORT: String(port),
     FUSE_MOUNT: "none",
+    RPC_ALLOW_ANONYMOUS: "1",
     CAPNWEB_TRACK_STUBS: "1",
   };
 
