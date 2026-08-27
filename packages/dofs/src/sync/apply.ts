@@ -612,7 +612,7 @@ function alreadyApplied(db: Database, entry: Exclude<ChangeEntry, { kind: "delet
 // Canonicalization throws a WorkspaceFsError for a path that is
 // empty, relative, NUL-bearing, or escapes root; the apply loop lets
 // that propagate so the caller's transaction rolls the batch back.
-function canonicalEntry<T extends ChangeEntry>(entry: T): T {
+function canonicalEntry(entry: ChangeEntry): ChangeEntry {
   const { path } = canonicalizePath(entry.path);
   if (path === entry.path) return entry;
   return { ...entry, path };
