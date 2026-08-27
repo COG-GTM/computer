@@ -326,6 +326,11 @@ await ws.git.add({ paths: ["notes.md"] });
 await ws.git.commit({ message: "add notes" });
 ```
 
+Network git is denied by default. Set
+`remoteAccess.allowedHosts` on `createGitClient()` to explicitly
+allow the remote hosts your application needs; HTTPS is required
+unless `allowInsecureHttp` is enabled.
+
 The git subpath bundles `isomorphic-git` lazily and swaps its `pako`
 dependency for the Workers `node:zlib` implementation, so the default
 package graph stays free of git. There's also an argv entry point

@@ -64,7 +64,7 @@ function fakeNetworkGit(): {
     }),
     listRemotes: vi.fn(async (args) => {
       calls.listRemotes.push([args]);
-      return [];
+      return [{ remote: "origin", url: "https://example.test/repo.git" }];
     }),
   };
   return { git, calls };
@@ -77,6 +77,7 @@ describe("fetchWith forwarding", () => {
   it("forwards remote, ref, depth, prune, headers, onAuth", async () => {
     const { git, calls } = fakeNetworkGit();
     const onAuth = vi.fn();
+    const headers = { Authorization: "Bearer xyz" };
     await fetchWith({
       git,
       fs: fakeFs,
@@ -86,8 +87,9 @@ describe("fetchWith forwarding", () => {
       ref: "main",
       depth: 5,
       prune: true,
-      headers: { Authorization: "Bearer xyz" },
+      headers,
       onAuth,
+      remoteAccess: { allowedHosts: ["example.test"] },
     });
     expect(calls.fetch[0][0]).toMatchObject({
       dir: "/r",
@@ -95,9 +97,48 @@ describe("fetchWith forwarding", () => {
       ref: "main",
       depth: 5,
       prune: true,
-      headers: { Authorization: "Bearer xyz" },
-      onAuth,
+      onAuth: expect.any(Function),
     });
+    const forwarded = calls.fetch[0][0] as { headers: typeof headers; onAuth: unknown };
+    expect(forwarded.headers).toBe(headers);
+    expect(forwarded.onAuth).not.toBe(onAuth);
+  });
+
+  it("rejects an attacker URL before calling fetch", async () => {
+    const { git, calls } = fakeNetworkGit();
+
+    await expect(
+      fetchWith({
+        git,
+        fs: fakeFs,
+        http: fakeHttp,
+        dir: "/r",
+        url: "https://evil.example/repo.git",
+        remoteAccess: { allowedHosts: ["example.test"] },
+      }),
+    ).rejects.toThrow();
+
+    expect(calls.fetch).toHaveLength(0);
+  });
+
+  it("rejects an attacker URL configured on the remote", async () => {
+    const { git, calls } = fakeNetworkGit();
+    vi.mocked(git.listRemotes).mockResolvedValue([
+      { remote: "origin", url: "https://evil.example/repo.git" },
+    ]);
+
+    await expect(
+      fetchWith({
+        git,
+        fs: fakeFs,
+        http: fakeHttp,
+        dir: "/r",
+        remote: "origin",
+        remoteAccess: { allowedHosts: ["example.test"] },
+      }),
+    ).rejects.toThrow();
+
+    expect(calls.fetch).toHaveLength(0);
   });
 });
 
@@ -114,6 +155,7 @@ describe("pushWith forwarding", () => {
       force: true,
       delete: false,
       headers: { Authorization: "x" },
+      remoteAccess: { allowedHosts: ["example.test"] },
     });
     expect(result.ok).toBe(true);
     expect(calls.push[0][0]).toMatchObject({
@@ -123,6 +165,43 @@ describe("pushWith forwarding", () => {
       delete: false,
       headers: { Authorization: "x" },
     });
+  });
+
+  it("rejects an attacker URL before calling push", async () => {
+    const { git, calls } = fakeNetworkGit();
+
+    await expect(
+      pushWith({
+        git,
+        fs: fakeFs,
+        http: fakeHttp,
+        dir: "/r",
+        url: "https://evil.example/repo.git",
+        remoteAccess: { allowedHosts: ["example.test"] },
+      }),
+    ).rejects.toThrow();
+
+    expect(calls.push).toHaveLength(0);
+  });
+
+  it("rejects an attacker URL configured on the remote", async () => {
+    const { git, calls } = fakeNetworkGit();
+    vi.mocked(git.listRemotes).mockResolvedValue([
+      { remote: "origin", url: "https://evil.example/repo.git" },
+    ]);
+
+    await expect(
+      pushWith({
+        git,
+        fs: fakeFs,
+        http: fakeHttp,
+        dir: "/r",
+        remote: "origin",
+        remoteAccess: { allowedHosts: ["example.test"] },
+      }),
+    ).rejects.toThrow();
+
+    expect(calls.push).toHaveLength(0);
   });
 
   it("returns the underlying PushResult unchanged", async () => {
@@ -139,6 +218,7 @@ describe("pushWith forwarding", () => {
       fs: fakeFs,
       http: fakeHttp,
       dir: "/r",
+      remoteAccess: { allowedHosts: ["example.test"] },
     });
     expect(result.ok).toBe(false);
     expect(result.error).toBe("non-fast-forward");
@@ -155,6 +235,7 @@ describe("pullWith identity resolution", () => {
       dir: "/r",
       author: { name: "A", email: "a@x" },
       committer: { name: "C", email: "c@x" },
+      remoteAccess: { allowedHosts: ["example.test"] },
     });
     expect(calls.pull[0][0]).toMatchObject({
       author: { name: "A", email: "a@x" },
@@ -170,6 +251,7 @@ describe("pullWith identity resolution", () => {
       http: fakeHttp,
       dir: "/r",
       env: { GIT_AUTHOR_NAME: "Env", GIT_AUTHOR_EMAIL: "env@x" },
+      remoteAccess: { allowedHosts: ["example.test"] },
     });
     expect(calls.pull[0][0]).toMatchObject({
       author: { name: "Env", email: "env@x" },
@@ -184,6 +266,7 @@ describe("pullWith identity resolution", () => {
       http: fakeHttp,
       dir: "/r",
       defaultIdentity: { name: "Default", email: "d@x" },
+      remoteAccess: { allowedHosts: ["example.test"] },
     });
     expect(calls.pull[0][0]).toMatchObject({
       author: { name: "Default", email: "d@x" },
@@ -198,9 +281,52 @@ describe("pullWith identity resolution", () => {
         throw e;
       },
     };
-    await expect(pullWith({ git, fs: fakeFs, http: fakeHttp, dir: "/r" })).rejects.toBeInstanceOf(
-      MissingIdentityError,
-    );
+    await expect(
+      pullWith({
+        git,
+        fs: fakeFs,
+        http: fakeHttp,
+        dir: "/r",
+        remoteAccess: { allowedHosts: ["example.test"] },
+      }),
+    ).rejects.toBeInstanceOf(MissingIdentityError);
+  });
+
+  it("rejects an attacker URL before calling pull", async () => {
+    const { git, calls } = fakeNetworkGit();
+
+    await expect(
+      pullWith({
+        git,
+        fs: fakeFs,
+        http: fakeHttp,
+        dir: "/r",
+        url: "https://evil.example/repo.git",
+        remoteAccess: { allowedHosts: ["example.test"] },
+      }),
+    ).rejects.toThrow();
+
+    expect(calls.pull).toHaveLength(0);
+  });
+
+  it("rejects an attacker URL configured on the remote", async () => {
+    const { git, calls } = fakeNetworkGit();
+    vi.mocked(git.listRemotes).mockResolvedValue([
+      { remote: "origin", url: "https://evil.example/repo.git" },
+    ]);
+
+    await expect(
+      pullWith({
+        git,
+        fs: fakeFs,
+        http: fakeHttp,
+        dir: "/r",
+        remote: "origin",
+        remoteAccess: { allowedHosts: ["example.test"] },
+      }),
+    ).rejects.toThrow();
+
+    expect(calls.pull).toHaveLength(0);
   });
 });
 

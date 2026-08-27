@@ -40,6 +40,21 @@ export class NotARepositoryError extends GitError {
 }
 
 /**
+ * Raised when a network git operation targets a URL outside the
+ * configured remote access policy. CLI exit code: 128.
+ */
+export class RemoteNotAllowedError extends GitError {
+  constructor(rawUrl: string | undefined, reason: string, options?: { cause?: unknown }) {
+    super(
+      "EREMOTEDENIED",
+      rawUrl === undefined ? reason : `remote '${rawUrl}' is not permitted: ${reason}`,
+      options,
+    );
+    this.name = "RemoteNotAllowedError";
+  }
+}
+
+/**
  * Raised when an operation needs a working repository at `dir`
  * and `dir` already contains a `.git` directory. CLI exit code:
  * 128.

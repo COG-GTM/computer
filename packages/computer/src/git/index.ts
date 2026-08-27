@@ -113,6 +113,7 @@ import {
   tagListWith,
   tagWith,
 } from "./refs.js";
+import type { GitRemoteAccessPolicy } from "./remote-policy.js";
 import {
   addWith,
   type GitAddOptions,
@@ -154,7 +155,9 @@ export {
   NotARepositoryError,
   PathOutsideRepoError,
   PathspecNotFoundError,
+  RemoteNotAllowedError,
 } from "./errors.js";
+export type { GitRemoteAccessPolicy } from "./remote-policy.js";
 export type { GitInitOptions } from "./init.js";
 export type {
   AuthCallback,
@@ -334,6 +337,8 @@ export interface CreateGitClientOptions {
    * Production callers do not pass this.
    */
   adapter?: (provider: SQLiteWorkspaceProvider) => Promise<IsomorphicGitFSClient>;
+  /** Network git is denied until `remoteAccess.allowedHosts` is set. */
+  remoteAccess?: GitRemoteAccessPolicy;
 }
 
 export type GitClientFactory = (options: WorkspaceGitClientOptions) => GitClient;
@@ -360,6 +365,7 @@ export type GitClientFactory = (options: WorkspaceGitClientOptions) => GitClient
  */
 export function createGitClient({
   adapter = workspaceIsomorphicGitClient,
+  remoteAccess,
 }: CreateGitClientOptions = {}): GitClientFactory {
   return function createWorkspaceGitClient({
     ws,
@@ -400,6 +406,7 @@ export function createGitClient({
           git: await loadGit<IsomorphicGitClient>(),
           http: await loadHttp(),
           cache,
+          remoteAccess,
         });
       },
       async diff(options = {}) {
@@ -571,6 +578,7 @@ export function createGitClient({
           git: await loadGit<IsomorphicGitNetworkClient>(),
           http: await loadHttp(),
           cache,
+          remoteAccess,
         });
       },
       async push(options = {}) {
@@ -580,6 +588,7 @@ export function createGitClient({
           git: await loadGit<IsomorphicGitNetworkClient>(),
           http: await loadHttp(),
           cache,
+          remoteAccess,
         });
       },
       async pull(options = {}) {
@@ -590,6 +599,7 @@ export function createGitClient({
           http: await loadHttp(),
           cache,
           defaultIdentity,
+          remoteAccess,
         });
       },
       async merge(options) {

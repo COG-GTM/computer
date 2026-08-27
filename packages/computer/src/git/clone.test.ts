@@ -35,6 +35,7 @@ function fakeGit() {
 // it never inspects them, only forwards.
 const fakeFs: object = { __brand: "fake-fs" };
 const fakeHttp: object = { __brand: "fake-http" };
+const examplePolicy = { allowedHosts: ["example.test"] };
 
 describe("cloneWith option translation", () => {
   it("splits the request into a noCheckout clone and a checkout, with sensible defaults", async () => {
@@ -45,12 +46,13 @@ describe("cloneWith option translation", () => {
       http: fakeHttp,
       fs: fakeFs,
       url: "https://example.test/repo.git",
+      remoteAccess: examplePolicy,
     });
 
     expect(cloneCalls).toEqual([
       expect.objectContaining({
         fs: fakeFs,
-        http: fakeHttp,
+        http: expect.any(Object),
         url: "https://example.test/repo.git",
         dir: "/",
         depth: 1,
@@ -80,6 +82,7 @@ describe("cloneWith option translation", () => {
       http: fakeHttp,
       fs: fakeFs,
       url: "https://example.test/repo.git",
+      remoteAccess: examplePolicy,
       dir: "/work",
       ref: "develop",
       depth: 5,
@@ -123,6 +126,7 @@ describe("cloneWith option translation", () => {
         http: fakeHttp,
         fs: fakeFs,
         url: "https://example.test/repo.git",
+        remoteAccess: examplePolicy,
         depth,
       });
       expect(cloneCalls[0].depth, `depth=${depth}`).toBeUndefined();
@@ -137,6 +141,7 @@ describe("cloneWith option translation", () => {
       http: fakeHttp,
       fs: fakeFs,
       url: "https://example.test/repo.git",
+      remoteAccess: examplePolicy,
       cache,
     });
     expect(cloneCalls[0].cache).toBe(cache);
@@ -158,10 +163,28 @@ describe("cloneWith option translation", () => {
         http: fakeHttp,
         fs: fakeFs,
         url: "https://example.test/repo.git",
+        remoteAccess: examplePolicy,
       }),
     ).rejects.toBe(boom);
 
     expect(git.checkout).not.toHaveBeenCalled();
+  });
+
+  it("rejects a disallowed URL before calling clone", async () => {
+    const { git, cloneCalls, checkoutCalls } = fakeGit();
+
+    await expect(
+      cloneWith({
+        git,
+        http: fakeHttp,
+        fs: fakeFs,
+        url: "https://evil.example/repo.git",
+        remoteAccess: examplePolicy,
+      }),
+    ).rejects.toThrow();
+
+    expect(cloneCalls).toHaveLength(0);
+    expect(checkoutCalls).toHaveLength(0);
   });
 });
 
@@ -216,7 +239,8 @@ describe("cloneWith subset checkout (real isomorphic-git + memfs)", () => {
       git: fakeClone,
       http: fakeHttp,
       fs: memfs,
-      url: "ignored — clone phase is faked",
+      url: "https://example.test/repo.git",
+      remoteAccess: examplePolicy,
       dir: DIR,
       paths: ["README.md", "keep"],
     });
@@ -253,7 +277,8 @@ describe("cloneWith subset checkout (real isomorphic-git + memfs)", () => {
       git: fakeClone,
       http: fakeHttp,
       fs: memfs,
-      url: "ignored — clone phase is faked",
+      url: "https://example.test/repo.git",
+      remoteAccess: examplePolicy,
       dir: DIR,
     });
 
