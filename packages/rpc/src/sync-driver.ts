@@ -24,12 +24,12 @@ import {
   readPushCursor,
   readWatermark,
   type SkippedEntry,
-  stageBlob,
   writeFetchCursor,
   writePushCursor,
   writeWatermark,
 } from "@cloudflare/dofs";
 
+import { BlobIntake, hex, MAX_BLOB_BYTES } from "./blob-intake.js";
 import type { SyncRPC } from "./interface.js";
 
 export interface SyncBatchBudget {
@@ -58,12 +58,6 @@ export interface PushBatchOptions {
   backend?: string;
   targetCursor?: ChangeCursor;
   budget: SyncBatchBudget;
-}
-
-function hex(bytes: Uint8Array): string {
-  let s = "";
-  for (let i = 0; i < bytes.byteLength; i++) s += bytes[i].toString(16).padStart(2, "0");
-  return s;
 }
 
 // Best-effort dispose of a capnweb result envelope. Real envelopes
@@ -252,12 +246,13 @@ async function pullOnceImpl(
             // capnweb releases the stream stub when the stream itself
             // closes. The reader-loop below drains to completion.
             const bytesStream = await remote.fetchObjects(missing);
+            const intake = new BlobIntake({ requested: missing });
             const bytesReader = bytesStream.getReader();
             try {
               while (true) {
                 const { value, done } = await bytesReader.read();
                 if (done) break;
-                stageBlob(db, value.hash, value.bytes, Date.now());
+                intake.stage(db, value.hash, value.bytes, Date.now());
               }
             } finally {
               bytesReader.releaseLock();
@@ -435,6 +430,15 @@ async function pullBatchImpl(
         throw new Error(`pullBatch: remote is missing object ${hex(missingRemote[0].hash)}`);
       }
       const missingLocal = chunks.filter((chunk) => !localHave.has(hex(chunk.hash)));
+      // The first transferable chunk is admitted regardless of the
+      // budget so a chunk larger than maxBytes still makes progress.
+      // Rejecting an over-sized declaration up front keeps that escape
+      // hatch bounded at one chunk's worth of bytes.
+      for (const chunk of missingLocal) {
+        if (chunk.size > MAX_BLOB_BYTES) {
+          throw new Error(`pullBatch: remote object ${hex(chunk.hash)} exceeds maximum size`);
+        }
+      }
       const transferable: { hash: Uint8Array; size: number }[] = [];
       let availableBytes = options.budget.maxBytes - bytes;
       for (const chunk of missingLocal) {
@@ -447,18 +451,12 @@ async function pullBatchImpl(
       }
       if (transferable.length < missingLocal.length) {
         if (transferable.length > 0) {
-          const objectStream = await remote.fetchObjects(transferable.map((chunk) => chunk.hash));
-          const objectReader = objectStream.getReader();
-          try {
-            while (true) {
-              const object = await objectReader.read();
-              if (object.done) break;
-              stageBlob(db, object.value.hash, object.value.bytes, Date.now());
-              bytes += object.value.bytes.byteLength;
-            }
-          } finally {
-            objectReader.releaseLock();
-          }
+          bytes += await fetchAndStage(
+            db,
+            remote,
+            transferable.map((chunk) => chunk.hash),
+            Math.max(options.budget.maxBytes - bytes, MAX_BLOB_BYTES),
+          );
         }
         return {
           status: "pending",
@@ -471,18 +469,12 @@ async function pullBatchImpl(
         };
       }
       if (transferable.length > 0) {
-        const objectStream = await remote.fetchObjects(transferable.map((chunk) => chunk.hash));
-        const objectReader = objectStream.getReader();
-        try {
-          while (true) {
-            const object = await objectReader.read();
-            if (object.done) break;
-            stageBlob(db, object.value.hash, object.value.bytes, Date.now());
-            bytes += object.value.bytes.byteLength;
-          }
-        } finally {
-          objectReader.releaseLock();
-        }
+        bytes += await fetchAndStage(
+          db,
+          remote,
+          transferable.map((chunk) => chunk.hash),
+          Math.max(options.budget.maxBytes - bytes, MAX_BLOB_BYTES),
+        );
       }
       const result = await applyChanges(db, [entry], new Map(), {
         source: "upstream",
@@ -513,6 +505,27 @@ async function pullBatchImpl(
     reader.releaseLock();
     maybeDispose(fetchResult);
   }
+}
+
+async function fetchAndStage(
+  db: Database,
+  remote: SyncRPC,
+  requested: Uint8Array[],
+  maxTotalBytes: number,
+): Promise<number> {
+  const objectStream = await remote.fetchObjects(requested);
+  const intake = new BlobIntake({ requested, maxTotalBytes });
+  const objectReader = objectStream.getReader();
+  try {
+    while (true) {
+      const object = await objectReader.read();
+      if (object.done) break;
+      intake.stage(db, object.value.hash, object.value.bytes, Date.now());
+    }
+  } finally {
+    objectReader.releaseLock();
+  }
+  return intake.totalBytes;
 }
 
 export async function pushBatch(

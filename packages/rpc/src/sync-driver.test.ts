@@ -58,6 +58,17 @@ async function drainStream<T>(stream: ReadableStream<T>): Promise<T[]> {
   return out;
 }
 
+function objectStream(
+  objects: { hash: Uint8Array; bytes: Uint8Array }[],
+): ReadableStream<{ hash: Uint8Array; bytes: Uint8Array }> {
+  return new ReadableStream({
+    start(controller) {
+      for (const object of objects) controller.enqueue(object);
+      controller.close();
+    },
+  });
+}
+
 // Wrap a SyncRPC so the fetchChanges result carries a tracked
 // [Symbol.dispose]. pullOnce owns that envelope and must dispose it on
 // every exit, including the throwing paths. Options inject the two
@@ -240,6 +251,83 @@ describe("sync driver — pullOnce", () => {
     } finally {
       a.close();
       b.close();
+    }
+  });
+
+  it("rejects pulled bytes whose content does not match the advertised hash", async () => {
+    const remote = makePeer();
+    const local = makePeer();
+    try {
+      const provider = new SQLiteWorkspaceProvider(remote.db, { now: () => 1 });
+      provider.writeFileSync("/poisoned.txt", "correct");
+      const badBytes = new TextEncoder().encode("poisoned");
+      const rpc = new Proxy(remote.rpc as object, {
+        get(target, property, receiver) {
+          if (property === "fetchObjects") {
+            return (hashes: Uint8Array[]) => objectStream([{ hash: hashes[0], bytes: badBytes }]);
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      }) as SyncRPC;
+
+      await expect(pullOnce(local.db, rpc)).rejects.toThrow(/does not match its content hash/);
+      expect(local.db.scalar<number>("SELECT COUNT(*) FROM vfs_blobs")).toBe(0);
+      expect(local.db.scalar<number>("SELECT COUNT(*) FROM vfs_blob_bytes")).toBe(0);
+    } finally {
+      remote.close();
+      local.close();
+    }
+  });
+
+  it("rejects a pulled object that was not requested", async () => {
+    const remote = makePeer();
+    const local = makePeer();
+    try {
+      const provider = new SQLiteWorkspaceProvider(remote.db, { now: () => 1 });
+      provider.writeFileSync("/unsolicited.txt", "correct");
+      const unsolicitedHash = new Uint8Array(32);
+      unsolicitedHash[0] = 1;
+      const bytes = new TextEncoder().encode("unsolicited");
+      const rpc = new Proxy(remote.rpc as object, {
+        get(target, property, receiver) {
+          if (property === "fetchObjects") {
+            return () => objectStream([{ hash: unsolicitedHash, bytes }]);
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      }) as SyncRPC;
+
+      await expect(pullOnce(local.db, rpc)).rejects.toThrow(/was not requested/);
+      expect(local.db.scalar<number>("SELECT COUNT(*) FROM vfs_blobs")).toBe(0);
+      expect(local.db.scalar<number>("SELECT COUNT(*) FROM vfs_blob_bytes")).toBe(0);
+    } finally {
+      remote.close();
+      local.close();
+    }
+  });
+
+  it("rejects an oversized pulled object", async () => {
+    const remote = makePeer();
+    const local = makePeer();
+    try {
+      const provider = new SQLiteWorkspaceProvider(remote.db, { now: () => 1 });
+      provider.writeFileSync("/oversized.txt", "correct");
+      const oversized = new Uint8Array(512 * 1024 + 1);
+      const rpc = new Proxy(remote.rpc as object, {
+        get(target, property, receiver) {
+          if (property === "fetchObjects") {
+            return (hashes: Uint8Array[]) => objectStream([{ hash: hashes[0], bytes: oversized }]);
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      }) as SyncRPC;
+
+      await expect(pullOnce(local.db, rpc)).rejects.toThrow(/exceeds maximum size/);
+      expect(local.db.scalar<number>("SELECT COUNT(*) FROM vfs_blobs")).toBe(0);
+      expect(local.db.scalar<number>("SELECT COUNT(*) FROM vfs_blob_bytes")).toBe(0);
+    } finally {
+      remote.close();
+      local.close();
     }
   });
 });
@@ -1322,6 +1410,35 @@ async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
 }
 
 describe("bounded synchronization", () => {
+  it("rejects poisoned bytes during a bounded pull", async () => {
+    const remote = makePeer();
+    const local = makePeer();
+    try {
+      const provider = new SQLiteWorkspaceProvider(remote.db, { now: () => 1 });
+      provider.writeFileSync("/poisoned-bounded.txt", "correct");
+      const badBytes = new TextEncoder().encode("poisoned");
+      const rpc = new Proxy(remote.rpc as object, {
+        get(target, property, receiver) {
+          if (property === "fetchObjects") {
+            return (hashes: Uint8Array[]) => objectStream([{ hash: hashes[0], bytes: badBytes }]);
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      }) as SyncRPC;
+
+      await expect(
+        pullBatch(local.db, rpc, {
+          budget: { maxEntries: 8, maxBytes: 1024 },
+        }),
+      ).rejects.toThrow(/does not match its content hash/);
+      expect(local.db.scalar<number>("SELECT COUNT(*) FROM vfs_blobs")).toBe(0);
+      expect(local.db.scalar<number>("SELECT COUNT(*) FROM vfs_blob_bytes")).toBe(0);
+    } finally {
+      remote.close();
+      local.close();
+    }
+  });
+
   it("pulls one entry per batch and resumes at the captured target", async () => {
     const upstream = makePeer();
     const downstream = makePeer();
