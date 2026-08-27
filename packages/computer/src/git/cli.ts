@@ -19,6 +19,7 @@ import {
   MissingIdentityError,
   NotARepositoryError,
   PathspecNotFoundError,
+  RemoteNotAllowedError,
 } from "./errors.js";
 import type { CommitView, DiffSummaryEntry, GitClient, GitIdentity, StatusEntry } from "./index.js";
 import { formatPorcelainV1, formatPorcelainV2, formatShort } from "./status.js";
@@ -2117,7 +2118,7 @@ async function runClean(
  * Map a `GitError` subclass to the standard `git: <message>`
  * stderr framing and a deterministic exit code:
  *
- *   NotARepositoryError, AlreadyInitializedError,
+ *   NotARepositoryError, RemoteNotAllowedError, AlreadyInitializedError,
  *   MissingIdentityError, PathOutsideRepoError,
  *   PathspecNotFoundError -> 128
  *   any other GitError                                  -> 1
@@ -2128,6 +2129,9 @@ async function runClean(
  */
 function mapGitError(subcommand: string, cause: unknown): GitCliResult {
   if (cause instanceof NotARepositoryError) {
+    return makeStderr(subcommand, cause.message, 128);
+  }
+  if (cause instanceof RemoteNotAllowedError) {
     return makeStderr(subcommand, cause.message, 128);
   }
   if (cause instanceof AlreadyInitializedError) {

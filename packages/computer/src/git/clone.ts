@@ -12,6 +12,12 @@
 // ./index.ts resolves those from dynamic imports of `isomorphic-git`
 // so the peer dep stays optional and the base bundle pays no cost.
 
+import {
+  assertRemoteAllowed,
+  type GitRemoteAccessPolicy,
+  guardHttpTransport,
+} from "./remote-policy.js";
+
 /**
  * The subset of `isomorphic-git`'s API consumed here. Declared
  * structurally to avoid pulling the package's `.d.ts` into this
@@ -100,11 +106,13 @@ export interface CloneWithDeps extends GitCloneOptions {
    * which is the difference between sub-second diffs and minutes.
    */
   cache?: object;
+  remoteAccess?: GitRemoteAccessPolicy;
 }
 
 export async function cloneWith(opts: CloneWithDeps): Promise<void> {
   const dir = opts.dir ?? "/";
   const ref = opts.ref;
+  assertRemoteAllowed(opts.url, opts.remoteAccess);
   const depthRaw = opts.depth ?? 1;
   // depth=0 and depth=Infinity both mean "no shallow limit" on this
   // surface. isomorphic-git interprets `undefined` that way.
@@ -112,7 +120,7 @@ export async function cloneWith(opts: CloneWithDeps): Promise<void> {
 
   await opts.git.clone({
     fs: opts.fs,
-    http: opts.http,
+    http: guardHttpTransport(opts.http, opts.remoteAccess),
     dir,
     url: opts.url,
     ref,

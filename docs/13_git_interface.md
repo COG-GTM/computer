@@ -6,8 +6,15 @@
 > `packages/computer/src/backends/worker-shell/`. Everything below
 > works today.
 
-`workspace.git` is a major typed surface on `Workspace`, alongside `fs`, `runtime`, Assets, and Artifacts. It is opt-in: pass `createGitClient()` from `@cloudflare/computer/git` as `WorkspaceOptions.git` to enable it. Git runs every operation against the local SQLite-backed VFS through `isomorphic-git`, so a
-filesystem-only workspace (no backend) can drive a full
+`workspace.git` is a major typed surface on `Workspace`, alongside
+`fs`, `runtime`, Assets, and Artifacts. It is opt-in: pass
+`createGitClient()` from `@cloudflare/computer/git` as
+`WorkspaceOptions.git` to enable it. Network git is denied by
+default; configure `remoteAccess.allowedHosts` on
+`createGitClient()` to allow only the hosts your application intends
+to contact. Git runs every operation against the local SQLite-backed
+VFS through `isomorphic-git`, so a filesystem-only workspace (no
+backend) can drive a full
 clone/commit/diff cycle. The git subpath bundles `isomorphic-git`
 lazily and replaces its `pako` dependency with a small
 `node:zlib` shim for Workers running with `nodejs_compat`; the
@@ -115,7 +122,12 @@ diff against HEAD — through each entry point.
 import { Workspace } from "@cloudflare/computer";
 import { createGitClient } from "@cloudflare/computer/git";
 
-const ws = new Workspace({ storage: ctx.storage, git: createGitClient() });
+const ws = new Workspace({
+  storage: ctx.storage,
+  git: createGitClient({
+    remoteAccess: { allowedHosts: ["github.com"] },
+  }),
+});
 await ws.git.clone({ url: "https://github.com/example/repo.git" });
 await ws.fs.writeFile("/README.md", "hello world\n");
 const patch = await ws.git.diff();
@@ -202,6 +214,14 @@ same auth contract `isomorphic-git` exposes:
   Return a `GitAuth` (`username` / `password` / `headers`) and
   `isomorphic-git` retries with it.
 
+`createGitClient({ remoteAccess })` applies one policy to `clone`,
+`fetch`, `push`, and `pull`. `allowedHosts` accepts exact hosts,
+exact host-and-port entries, and `*.` patterns for one or more
+subdomain labels. HTTPS is required unless `allowInsecureHttp` is
+set. A missing or empty allowlist denies network git. URLs with
+userinfo are supported, so credentialed remotes can still be used;
+only their hostname and port are matched.
+
 The CLI does not surface `onAuth` (no clean argv shape for a
 callback); for interactive flows reach for the typed API.
 
@@ -213,6 +233,7 @@ The typed surface throws subclasses of `GitError`:
 |---|---|---|
 | `NotARepositoryError` | `ENOTAREPO` | 128 |
 | `AlreadyInitializedError` | `EALREADYINIT` | 128 |
+| `RemoteNotAllowedError` | `EREMOTEDENIED` | 128 |
 | `MissingIdentityError` | `EIDENTITY` | 128 |
 | `PathOutsideRepoError` | `EPATHOUTSIDE` | 128 |
 | `PathspecNotFoundError` | `EPATHSPEC` | 128 |
@@ -271,6 +292,10 @@ ws.git.init({
   bare?: boolean,           // default false
 }): Promise<void>
 ```
+
+Clone validates the URL against the factory's `remoteAccess` policy
+before contacting the remote. Network access is denied when no
+allowlist is configured.
 
 | Flag | TS field |
 |---|---|
@@ -742,6 +767,8 @@ ws.git.fetch({
 The CLI routes a positional that starts with a URL scheme to
 `url`; anything else is a remote name. *Not mapped:*
 `--unshallow`, `--all`, `--shallow-since`, `--prune-tags`.
+The resolved URL, including a URL configured under the selected
+remote name, must be allowed by `remoteAccess`.
 
 ### `push`
 
@@ -772,6 +799,8 @@ interface PushResult {
 A non-ok `PushResult` surfaces as exit 1 on the CLI with the
 error string on stderr. *Not mapped:* `--tags`, `--set-
 upstream`, `--atomic`, `--mirror`.
+The destination must be allowed by `remoteAccess`; this also applies
+when it is resolved from the configured remote.
 
 ### `pull`
 
@@ -798,6 +827,8 @@ ws.git.pull({
 Identity follows the same precedence as `commit`; if a merge
 commit is needed and no identity resolves,
 `MissingIdentityError` fires.
+The destination must be allowed by `remoteAccess`, including when
+resolved from the configured remote.
 
 ### `merge`
 

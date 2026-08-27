@@ -21,7 +21,9 @@ export class HostDO extends DurableObject<Env> {
     this.#workspace = new Workspace({
       storage: ctx.storage as unknown as DurableObjectStorageLike,
       waitUntil: ctx.waitUntil.bind(ctx),
-      git: createGitClient(),
+      git: createGitClient({
+        remoteAccess: { allowedHosts: ["github.com", "*.artifacts.cloudflare.net"] },
+      }),
       backends: [
         new WorkerJavaScriptBackend({
           loader: env.LOADER,

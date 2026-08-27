@@ -49,7 +49,9 @@ function workspaceOptions(self: InstanceType<typeof ComputerMCPBase>): Workspace
   return {
     storage: ctx.storage as unknown as DurableObjectStorageLike,
     sessionId: ctx.id.toString(),
-    git: createGitClient(),
+    git: createGitClient({
+      remoteAccess: { allowedHosts: ["github.com", "*.artifacts.cloudflare.net"] },
+    }),
     backends: [self.workerShell, self.containerShell],
   };
 }

@@ -17,7 +17,14 @@ import {
   isNotARepositoryCause,
   MissingIdentityError,
   NotARepositoryError,
+  RemoteNotAllowedError,
 } from "./errors.js";
+import {
+  assertRemoteAllowed,
+  guardAuthCallback,
+  guardHttpTransport,
+  type GitRemoteAccessPolicy,
+} from "./remote-policy.js";
 
 /** Shape isomorphic-git accepts for HTTP basic / bearer auth. */
 export interface GitAuth {
@@ -174,6 +181,7 @@ export interface FetchWithDeps extends GitFetchOptions {
   fs: object;
   http: object;
   cache?: object;
+  remoteAccess?: GitRemoteAccessPolicy;
 }
 
 export interface FetchResult {
@@ -183,10 +191,12 @@ export interface FetchResult {
 
 export async function fetchWith(opts: FetchWithDeps): Promise<FetchResult> {
   const dir = opts.dir ?? "/";
+  const url = await resolveRemoteTarget(opts, dir);
+  assertRemoteAllowed(url, opts.remoteAccess);
   try {
     return await opts.git.fetch({
       fs: opts.fs,
-      http: opts.http,
+      http: guardHttpTransport(opts.http, opts.remoteAccess),
       dir,
       url: opts.url,
       remote: opts.remote,
@@ -197,12 +207,13 @@ export async function fetchWith(opts: FetchWithDeps): Promise<FetchResult> {
       tags: opts.tags,
       prune: opts.prune,
       headers: opts.headers,
-      onAuth: opts.onAuth,
+      onAuth: guardAuthCallback(opts.onAuth, opts.remoteAccess),
       onProgress: opts.onProgress,
       onMessage: opts.onMessage,
       cache: opts.cache,
     });
   } catch (cause) {
+    if (cause instanceof RemoteNotAllowedError) throw cause;
     if (isNotARepositoryCause(cause)) throw new NotARepositoryError(dir, { cause });
     throw new GitError("EFETCHFAIL", `git fetch failed: ${errorMessage(cause)}`, { cause });
   }
@@ -232,14 +243,17 @@ export interface PushWithDeps extends GitPushOptions {
   fs: object;
   http: object;
   cache?: object;
+  remoteAccess?: GitRemoteAccessPolicy;
 }
 
 export async function pushWith(opts: PushWithDeps): Promise<PushResult> {
   const dir = opts.dir ?? "/";
+  const url = await resolveRemoteTarget(opts, dir);
+  assertRemoteAllowed(url, opts.remoteAccess);
   try {
     return await opts.git.push({
       fs: opts.fs,
-      http: opts.http,
+      http: guardHttpTransport(opts.http, opts.remoteAccess),
       dir,
       url: opts.url,
       remote: opts.remote,
@@ -248,12 +262,13 @@ export async function pushWith(opts: PushWithDeps): Promise<PushResult> {
       force: opts.force,
       delete: opts.delete,
       headers: opts.headers,
-      onAuth: opts.onAuth,
+      onAuth: guardAuthCallback(opts.onAuth, opts.remoteAccess),
       onProgress: opts.onProgress,
       onMessage: opts.onMessage,
       cache: opts.cache,
     });
   } catch (cause) {
+    if (cause instanceof RemoteNotAllowedError) throw cause;
     if (isNotARepositoryCause(cause)) throw new NotARepositoryError(dir, { cause });
     throw new GitError("EPUSHFAIL", `git push failed: ${errorMessage(cause)}`, { cause });
   }
@@ -293,10 +308,13 @@ export interface PullWithDeps extends GitPullOptions {
   http: object;
   cache?: object;
   defaultIdentity?: { name: string; email: string };
+  remoteAccess?: GitRemoteAccessPolicy;
 }
 
 export async function pullWith(opts: PullWithDeps): Promise<void> {
   const dir = opts.dir ?? "/";
+  const url = await resolveRemoteTarget(opts, dir);
+  assertRemoteAllowed(url, opts.remoteAccess);
   // pull may need to write a merge commit. If we don't have an
   // identity from anywhere, fail fast with the same error commit
   // raises so the failure mode is consistent.
@@ -316,7 +334,7 @@ export async function pullWith(opts: PullWithDeps): Promise<void> {
   try {
     await opts.git.pull({
       fs: opts.fs,
-      http: opts.http,
+      http: guardHttpTransport(opts.http, opts.remoteAccess),
       dir,
       url: opts.url,
       remote: opts.remote,
@@ -326,7 +344,7 @@ export async function pullWith(opts: PullWithDeps): Promise<void> {
       fastForwardOnly: opts.fastForwardOnly,
       singleBranch: opts.singleBranch,
       headers: opts.headers,
-      onAuth: opts.onAuth,
+      onAuth: guardAuthCallback(opts.onAuth, opts.remoteAccess),
       onProgress: opts.onProgress,
       onMessage: opts.onMessage,
       author,
@@ -334,6 +352,7 @@ export async function pullWith(opts: PullWithDeps): Promise<void> {
       cache: opts.cache,
     });
   } catch (cause) {
+    if (cause instanceof RemoteNotAllowedError) throw cause;
     if (isNotARepositoryCause(cause)) throw new NotARepositoryError(dir, { cause });
     // isomorphic-git's MissingNameError fires when pull tries to
     // write a merge commit without an identity. Map it to the
@@ -507,4 +526,26 @@ export async function remoteListWith(opts: RemoteListWithDeps): Promise<RemoteVi
 function errorMessage(cause: unknown): string {
   if (cause instanceof Error) return cause.message;
   return String(cause);
+}
+
+type NetworkRemoteOptions = {
+  git: IsomorphicGitNetworkClient;
+  fs: object;
+  dir?: string;
+  url?: string;
+  remote?: string;
+};
+
+async function resolveRemoteTarget(opts: NetworkRemoteOptions, dir: string): Promise<string> {
+  if (opts.url !== undefined) return opts.url;
+  const remote = opts.remote ?? "origin";
+  try {
+    const remotes = await opts.git.listRemotes({ fs: opts.fs, dir });
+    const configured = remotes.find((entry) => entry.remote === remote)?.url;
+    if (configured !== undefined) return configured;
+  } catch (cause) {
+    if (isNotARepositoryCause(cause)) throw new NotARepositoryError(dir, { cause });
+    throw cause;
+  }
+  throw new RemoteNotAllowedError(remote, "no URL is configured for it");
 }
