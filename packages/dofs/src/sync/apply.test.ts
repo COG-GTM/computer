@@ -1446,6 +1446,66 @@ describe("applyChanges with read-only mount roots", () => {
       ]);
     });
   });
+
+  // The guard is a string prefix comparison, so it only holds if the
+  // path it reads is canonical. Entry paths come off the sync wire
+  // from an untrusted peer, which is free to spell a path inside the
+  // mount in a way that does not start with '<root>/'.
+  describe.each(["/./workspace/r2", "//workspace/r2", "/workspace/rw/../r2"] as const)(
+    "non-canonical spelling %s",
+    (spelling) => {
+      it("skips a symlink entry and leaves the mount subtree intact", async () => {
+        await withDB(async (db) => {
+          mkdir(db, "/workspace/r2/keep", { recursive: true }, () => 0);
+          await writeFile(db, "/workspace/r2/keep/data.txt", "authoritative", {}, () => 1);
+          stageReadOnly(db, "/workspace/r2");
+
+          const result = await applyChanges(
+            db,
+            [{ kind: "symlink", rev: 400, path: spelling, mode: 0o777, mtime: 2, target: "/tmp" }],
+            new Map(),
+          );
+
+          expect(result.applied).toBe(0);
+          expect(result.skipped).toEqual([
+            {
+              path: "/workspace/r2",
+              mountRoot: "/workspace/r2",
+              op: "write",
+              reason: "read-only",
+            },
+          ]);
+          expect(resolveInode(db, "/workspace/r2", { followSymlinks: false })?.type).toBe("dir");
+          expect(await readFile(db, "/workspace/r2/keep/data.txt", "utf8")).toBe("authoritative");
+        });
+      });
+
+      it("skips a dir entry rather than rewriting the mode under the mount", async () => {
+        await withDB(async (db) => {
+          mkdir(db, "/workspace/r2", { recursive: true, mode: 0o755 }, () => 0);
+          stageReadOnly(db, "/workspace/r2");
+
+          const result = applyChangesSync(
+            db,
+            [{ kind: "dir", rev: 401, path: spelling, mode: 0o777, mtime: 2 }],
+            new Map(),
+          );
+
+          expect(result.applied).toBe(0);
+          expect(result.skipped[0]?.mountRoot).toBe("/workspace/r2");
+          expect(resolveInode(db, "/workspace/r2", { followSymlinks: false })?.mode).toBe(0o755);
+        });
+      });
+    },
+  );
+
+  it("rejects an entry whose path cannot be canonicalized", async () => {
+    await withDB(async (db) => {
+      await expect(
+        applyChanges(db, [{ kind: "delete", rev: 402, path: "/../escape" }], new Map()),
+      ).rejects.toThrow(/escapes root/);
+    });
+  });
 });
 
 describe("applyChanges mtime propagation (auto_cache contract)", () => {

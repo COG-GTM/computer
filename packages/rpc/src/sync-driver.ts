@@ -11,7 +11,7 @@
 
 import {
   type ApplyResult,
-  applyChanges,
+  applyChangesSync,
   assertAppliedPushCursor,
   type ChangeCursor,
   type ChangeEntry,
@@ -75,7 +75,7 @@ function maybeDispose(value: unknown): void {
 }
 
 // Soft cap on entries processed per batch in pullOnce. Each batch
-// runs hasObjects + fetchObjects + applyChanges against the entries
+// runs hasObjects + fetchObjects + applyChangesSync against the entries
 // it just buffered, then releases them before reading the next.
 // Peak memory in pullOnce is O(PULL_BATCH_SIZE), not O(stream).
 const PULL_BATCH_SIZE = 256;
@@ -265,12 +265,18 @@ async function pullOnceImpl(
           }
         }
 
-        const batchResult = await applyChanges(db, batch, new Map(), {
-          source: "upstream",
-          backend,
-        });
+        // The batch is already buffered, so it applies inside one
+        // transactionSync: an entry that throws part way through (a
+        // missing chunk, a read-only mount rejection) rolls back the
+        // structural removals the earlier entries committed.
+        const batchResult = db.transactionSync(() =>
+          applyChangesSync(db, batch, new Map(), {
+            source: "upstream",
+            backend,
+          }),
+        );
         const last = batch[batch.length - 1];
-        // Cursor advancement intentionally happens after applyChanges()
+        // Cursor advancement intentionally happens after the apply
         // and is not atomic with it. A crash between apply and this
         // checkpoint re-fetches the batch; upstream apply is idempotent
         // because alreadyApplied() drops entries whose live state
@@ -484,10 +490,12 @@ async function pullBatchImpl(
           objectReader.releaseLock();
         }
       }
-      const result = await applyChanges(db, [entry], new Map(), {
-        source: "upstream",
-        backend,
-      });
+      const result = db.transactionSync(() =>
+        applyChangesSync(db, [entry], new Map(), {
+          source: "upstream",
+          backend,
+        }),
+      );
       const nextCursor = entryCursor(entry);
       writeFetchCursorIfAhead(db, nextCursor, backend);
       cursor = nextCursor;
@@ -704,7 +712,7 @@ export async function pushOnce(db: Database, remote: SyncRPC, backend?: string):
 }
 
 // One full tick: pull, then push. The order matters \u2014 pulling
-// first lets the loopback-suppression in applyChanges absorb
+// first lets the loopback-suppression in the apply path absorb
 // remote writes before we look at our own dirty set, so we don't
 // re-push entries that just came in.
 export async function tick(
