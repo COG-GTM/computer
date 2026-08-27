@@ -1,5 +1,9 @@
 import { mkdir, mkdirForSyncParents } from "../fs/mkdir.js";
-import { readOnlyRootFor } from "../fs/mount-guard.js";
+import {
+  assertNotInReadOnlyMount,
+  assertNotReadOnly,
+  readOnlyRootFor,
+} from "../fs/mount-guard.js";
 import { resolveInode, resolveInodeWithoutSymlinks } from "../fs/resolve.js";
 import { invalidateResolveSubtree } from "../fs/resolveCache.js";
 import { rm } from "../fs/rm.js";
@@ -104,7 +108,12 @@ function removeInodeTreeAtPath(db: Database, path: string, inode: number, type: 
   // drop at the root covers every descendant the walk unlinks.
   // Canonicalize to the exact key readers cache under (every other hook
   // already passes a canonical path; this one takes an entry path).
-  invalidateResolveSubtree(db, canonicalizePath(path).path);
+  const canonical = canonicalizePath(path).path;
+  // Enforce the read-only guard at the mutation site rather than
+  // trusting the caller's earlier check. The removal is recursive, so
+  // it must also reject a path that merely contains a mount root.
+  assertNotReadOnly(db, canonical);
+  invalidateResolveSubtree(db, canonical);
   const root = direntForPath(db, path, inode);
   const stack: Array<{
     path: string;
@@ -187,6 +196,9 @@ function direntForPath(
 }
 
 function applyDirectoryEntry(db: Database, entry: Extract<ChangeEntry, { kind: "dir" }>): void {
+  // mkdir() and removeInodeTreeAtPath() carry their own guard; the
+  // metadata update below writes through raw SQL, so it needs one here.
+  assertNotInReadOnlyMount(db, canonicalizePath(entry.path).path);
   const mode = entry.mode & 0o7777;
   const existing = resolveInode(db, entry.path, { followSymlinks: false });
   if (existing === null) {
@@ -282,7 +294,14 @@ export async function applyChanges(
     pathsInBatch = 0;
   };
 
-  for await (const entry of entries) {
+  for await (const wireEntry of entries) {
+    // Paths arrive off the sync wire and the peer is untrusted, so a
+    // spelling like '/./ro/x' or '//ro' reaches here verbatim. Every
+    // guard below is a string comparison against a canonical mount
+    // root, and every mutation canonicalizes on its own, so pin the
+    // canonical form once here and use it for the whole entry. A path
+    // that cannot be canonicalized is a protocol violation and throws.
+    const entry = canonicalEntry(wireEntry);
     // Idempotent skip: if the entry already matches the local
     // state, drop it on the floor. The check is what stops a
     // pull from bumping vfs_meta.rev for entries that are
@@ -387,13 +406,14 @@ export async function applyChanges(
 }
 
 // Synchronous variant of applyChanges. Same semantics; takes an
-// in-memory entry array instead of an iterable. Used on the push
-// receiver so the whole batch can run inside a single transactionSync
-// and a mid-stream failure rolls back every prior entry.
+// in-memory entry array instead of an iterable. Used wherever the
+// caller already holds the whole batch — the push receiver and the
+// pull loop, which buffers a batch before applying it — so the batch
+// can run inside a single transactionSync and a mid-batch failure
+// rolls back every prior entry, including structural removals.
 //
-// Stays separate from applyChanges so the streaming pull path
-// (which can't hold a sync transaction across network I/O) keeps
-// its async semantics.
+// Stays separate from applyChanges so a caller that streams entries
+// straight off the network keeps its async semantics.
 export function applyChangesSync(
   db: Database,
   entries: readonly ChangeEntry[],
@@ -412,7 +432,10 @@ export function applyChangesSync(
     pathsInBatch = 0;
   };
 
-  for (const entry of entries) {
+  for (const wireEntry of entries) {
+    // See applyChanges() for why the wire path is canonicalized before
+    // the read-only guard reads it.
+    const entry = canonicalEntry(wireEntry);
     if (options.source === "upstream" && entry.kind !== "delete") {
       if (alreadyApplied(db, entry)) continue;
     }
@@ -583,6 +606,16 @@ function alreadyApplied(db: Database, entry: Exclude<ChangeEntry, { kind: "delet
     live.linkTarget === entry.target &&
     (live.mode & 0o7777) === (entry.mode & 0o7777)
   );
+}
+
+// Return the entry with its path replaced by the canonical form.
+// Canonicalization throws a WorkspaceFsError for a path that is
+// empty, relative, NUL-bearing, or escapes root; the apply loop lets
+// that propagate so the caller's transaction rolls the batch back.
+function canonicalEntry<T extends ChangeEntry>(entry: T): T {
+  const { path } = canonicalizePath(entry.path);
+  if (path === entry.path) return entry;
+  return { ...entry, path };
 }
 
 function uint8Equal(a: Uint8Array, b: Uint8Array): boolean {
